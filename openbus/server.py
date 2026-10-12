@@ -14,6 +14,7 @@ import asyncio
 import hashlib
 import io
 import logging
+import math
 import os
 import posixpath
 import re
@@ -578,10 +579,14 @@ def _history() -> History:
 
 
 @app.get("/api/history")
-def get_history(window: str = "24h", lead: str | None = None):
+def get_history(window: str = "24h", lead: str | None = None, before: float | None = None):
+    """`before` (epoch ms) ends the range there instead of now, so a client can page back."""
     history = _history()
+    if before is not None and not 0 <= before < math.inf:  # NaN fails the comparison too
+        raise HTTPException(400, "before is a finite, non-negative time in epoch milliseconds")
+    now = None if before is None else min(before / 1000, time.time())  # a future cutoff is now
     try:
-        return history.query(window, lead=lead)
+        return history.query(window, lead=lead, now=now)
     except ValueError:
         raise HTTPException(400, "window and lead are all, or a count of hours or days "
                                  "(24h, 7d) up to 90 days") from None

@@ -82,7 +82,9 @@ class DemoWatcher:
 
 class DemoHistory(demo.History):
     def query(self, *args, **kwargs):
-        return super().query(*args, **{**kwargs, "now": demo.NOW})
+        now = kwargs.get("now")  # a `before` pages back from NOW
+        now = demo.NOW if now is None else min(now, demo.NOW)
+        return super().query(*args, **{**kwargs, "now": now})
 
 
 def _expunge_demo(root: Path):

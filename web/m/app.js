@@ -1,5 +1,5 @@
 import { headerPicker, dismissable } from "/m/header-picker.js";
-import { renderAtlas, renderFleet, refreshAtlasHistory } from '/m/atlas.js';
+import { renderAtlas, renderFleet, refreshAtlasHistory, renderHeatView, detailCard, pageHead } from '/m/atlas.js';
 import { renderCaptureLines, linkifyText } from "/terminal.js";
 import { setupLiveMode } from "/m/live.js";
 import { Composer, bindAttach, enterSubmits } from "/m/composer.js";
@@ -7,7 +7,7 @@ import { answerBody, pickCursorRow } from "/cursor-pick.js";
 import { sendPresence, setupPush, stateUrl } from "/push.js";
 import { paneLinks } from "/pr-links.js";
 import { needsYou, activityLabel, activityClass, isRunning, markWorking, isRecent, matchesFilter, matchesSearch, newestFirst, stillOnPane, paneName, paneActivity, paneHeadline, paneMeta, questionItems, records, itemDone, awaitingLaunch, LAUNCH_GRACE_MS, age, markEnding } from "/m/pane-model.js";
-import { parseHash, formatHash, historyMode } from "/m/url-state.js";
+import { parseHash, formatHash, historyMode, PAGES } from "/m/url-state.js";
 import { overscroll, overscrollState, RESIST_PX, IDLE_MS } from "/m/overscroll.js";
 import { tmuxKey, inputQueue } from "/m/keys.js";
 import { setupSidebar } from "/m/sidebar.js";
@@ -108,7 +108,10 @@ const reviewing = () => effectiveLayout() !== "focus";
 const terminalVisible = () => reviewing() || view === "terminal";
 const overviewVisible = () => reviewing() || view === "summary";
 const drafts = new Map();
-let dashboard = false;
+// page: a dashboard card's own view (url-state.js PAGES), which replaces the page. Opened
+// from its card, Back steps back to that entry rather than stacking a second dashboard on
+// it, and lands on the card it came from.
+let dashboard = false, page = null, pageFrom = null;
 const dashboardVisible = () => !active && (WIDE.matches || dashboard);
 let panes = [], statePanes = [], active = null, view = "summary", filter = "all", loaded = false, booted = false, tmuxRunning = true;
 let focusPushComposer = false;
@@ -210,7 +213,8 @@ function notice(message = "", ms = 0) {
 // routed synchronously (pushState/replaceState fire no hashchange). Back/Forward and edits
 // by hand reach route() through hashchange instead. Never call this from a poll.
 function navigate(id = null, nextView = "summary", { mode } = {}) {
-  const next = formatHash({ pane: id, view: nextView, dashboard: nextView === "dashboard", filter, sort });
+  const nextPage = PAGES.includes(nextView) ? nextView : null;
+  const next = formatHash({ pane: id, view: nextView, dashboard: nextView === "dashboard" || !!nextPage, page: nextPage, filter, sort });
   const current = location.hash.slice(1);
   if (next !== current) {
     history[`${mode || historyMode(current, next)}State`](null, "", next ? `#${next}` : location.pathname + location.search);
@@ -221,7 +225,9 @@ function navigate(id = null, nextView = "summary", { mode } = {}) {
 // Filter and sort change the list, not the screen: with the sidebar beside an open pane
 // (wide layout) the pane, its tab and a dashboard view must survive them; on a phone a
 // filter tap is a request for the list.
-const stayPut = () => navigate(active, active ? view : dashboard && WIDE.matches ? "dashboard" : "summary");
+const openPage = (name, card) => { navigate(null, name); pageFrom = card; };
+const closePage = () => pageFrom ? history.back() : navigate(null, "dashboard", { mode: "replace" });
+const stayPut = () => navigate(active, active ? view : dashboard && WIDE.matches ? page || "dashboard" : "summary");
 
 // Leaving a pane the user did not choose to leave: it closed under them, or a deep link
 // named one that is gone. Replace, never push: Back would land on the dead deep link and
@@ -236,12 +242,14 @@ function leaveMissingPane(id) {
 }
 
 function route() {
-  const wasDashboardVisible = dashboardVisible();
+  const wasDashboardVisible = dashboardVisible(), wasPage = page, from = pageFrom;
   const state = parseHash(location.hash, defaultView());
   const changed = state.pane !== active;
   active = state.pane;
   focusPushComposer = state.compose;
-  ({ dashboard, view, filter, sort } = state);
+  ({ dashboard, view, filter, sort, page } = state);
+  if (!page) pageFrom = null;
+  if (page !== wasPage) { $("dash-page").replaceChildren(); $("dash-page")._signature = null; } // each view builds afresh
   if (active) returnPane = null;
   $("sort").ariaLabel = `Sort: ${sort === "updated" ? "Last updated" : "Session order"}`;
   if (changed) {
@@ -258,6 +266,11 @@ function route() {
   // aborted at once, so every navigation fetched events twice.
   restartDetail();
   render();
+  if (wasPage && !page && dashboardVisible()) { // back at the card, the keyboard on its Details
+    from?.scrollIntoView({ block: "center" });
+    from?.querySelector('[data-key^="details:"]')?.focus({ preventScroll: true });
+  }
+  if (page && !wasPage) $("landing").scrollTop = 0;
   if (dashboardVisible() && !wasDashboardVisible) {
     refreshHistory(true);
   }
@@ -381,7 +394,10 @@ function landingRows(id, subset) {
 }
 
 function renderLanding() {
+  if (page === "heat") return renderHeatView($("dash-page"), $("session-atlas")._scope || {}, licon, closePage);
+  if (page === "usage") return paintUsage();
   const waiting = panes.filter(needsYou);
+  paintUsage(); // follows the tool chips
   show("landing-back", panes.some((p) => p.pane_id === returnPane));
   // With panes, the atlas speaks for itself (its filter row is labelled); the heading is
   // only for the loading and empty states, and hides itself when blank (style.css).
@@ -395,7 +411,7 @@ function renderLanding() {
     renderList();
     navigate();
     $("sessions").scrollTop = $("side-list").scrollTop = 0;
-  }, licon, $("usage-panel"));
+  }, licon, $("usage-panel"), $("landing-foot"), () => openPage("heat", $("landing-foot")));
   landingRows("landing-attention", waiting);
   renderLoops($("landing-loops"), loops, navigate, licon);
 }
@@ -598,18 +614,25 @@ const refreshHistory = (force) => refreshAtlasHistory(request, () => { if (dashb
 // Which meters a phone shows is a per-viewer choice (the Usage item in the "…" menu, Auto
 // by default); the wide sidebar has no such menu and keeps them all.
 const USAGE_MODES = { auto: "Auto", on: "On", off: "Off" };
-let usage = [], loops = null, cachedAt = 0, usageMode = "auto", usageDetail = false;
+let usage = [], loops = null, cachedAt = 0, usageMode = "auto";
 try { const saved = localStorage.getItem("tmuxrc-usage"); if (Object.hasOwn(USAGE_MODES, saved)) usageMode = saved; } catch {}
 const paintUsage = () => {
   $("usage-mode").ariaLabel = `Usage: ${USAGE_MODES[usageMode]}`;
   renderUsage($("usage"), shownUsage(usage, WIDE.matches ? "on" : usageMode), { wide: WIDE.matches });
-  // The dashboard's panel draws every meter as a trend whatever the mode; tapped, it opens up.
-  show("usage-panel", usage.length > 0);
-  renderUsage($("usage-board"), usage, { wide: true, detail: usageDetail });
-  $("usage-detail").ariaExpanded = usageDetail;
-  $("usage-detail").ariaLabel = $("usage-detail").title = usageDetail ? "Hide details" : "Show details";
-  html($("usage-detail"), licon(usageDetail ? "chevronUp" : "chevronDown"));
+  // The dashboard's card draws every meter as a trend whatever the mode; its view (#view=usage)
+  // adds the clock times and the forecast. The dashboard's tool chips filter both, and a
+  // tool with no plan meters hides the card.
+  const tool = $("session-atlas")._scope?.tool, board = tool ? usage.filter((a) => a.provider === tool) : usage;
+  show("usage-panel", board.length > 0);
+  renderUsage($("usage-board"), board, { wide: true });
+  if (page !== "usage") return;
+  if (!$("dash-page").contains(usageView)) $("dash-page").replaceChildren(pageHead("Plan usage", licon, closePage), usageView);
+  renderUsage(usageView.firstChild, board, { wide: true, detail: true });
 };
+const usageView = document.createElement("section");
+usageView.className = "atlas-panel";
+usageView.innerHTML = '<div class="usage-board usage-full" role="group" aria-label="Plan usage"></div>';
+detailCard($("usage-panel"), "Plan usage", "", () => openPage("usage", $("usage-panel")));
 // Plan usage and open loops are both cached by the server; a minute is fresh enough.
 async function refreshCached() {
   if (Date.now() - cachedAt < 60000) return;
@@ -641,7 +664,7 @@ function render() {
   show("back", inPane && !wide); show("close-pane", wide); show("heading", inPane); show("detail", inPane);
   // The main column is never blank on a wide screen: with no pane chosen it answers the
   // question the sidebar cannot, which is what the whole fleet is doing right now.
-  show("landing", dashboardVisible());
+  show("landing", dashboardVisible()); show("landing-main", !page); show("dash-page", !!page);
   show("divider", wide); show("fleet", wide); show("fleet-handle", wide);
   renderList();
   if (!inPane) { if (dashboardVisible()) renderLanding(); return; }
@@ -1203,15 +1226,13 @@ $("usage-mode").onclick = () => {
   try { localStorage.setItem("tmuxrc-usage", usageMode); } catch {}
   paintUsage();
 };
-$("usage-panel").onclick = () => { usageDetail = !usageDetail; paintUsage(); };
-// The strip is a glance; tapping it opens the dashboard at its panel, where the trend reads.
+// The strip is a glance; tapping it opens the usage view, where the trend and times read,
+// by way of the dashboard, so its Back lands on the Plan usage card.
+// A tool filter with no plan meters (it hides the card) is dropped, so the view has some.
 const openUsage = () => {
-  openDashboard();
-  const panel = $("usage-panel"), landing = $("landing"); // scrollIntoView would also scroll the clipped #app
-  const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
-  landing.scrollBy({ top: panel.getBoundingClientRect().top - landing.getBoundingClientRect().top - 16, behavior: still ? "auto" : "smooth" });
-  $("usage-detail").focus({ preventScroll: true }); // the strip it was opened from may be hidden now
-  if (!still) panel.animate([{ boxShadow: "0 0 0 3px var(--accent)" }, { boxShadow: "0 0 0 3px transparent" }], 1200);
+  const scope = $("session-atlas")._scope;
+  if (scope && !usage.some((a) => a.provider === scope.tool)) scope.tool = "";
+  openDashboard(); openPage("usage", $("usage-panel"));
 };
 $("usage").onclick = openUsage;
 $("usage").onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openUsage(); } };
