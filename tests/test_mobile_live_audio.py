@@ -144,7 +144,7 @@ const element = () => {
     querySelector: (s) => node.children.find((c) => s === `.${c.className}`), // children only
     querySelectorAll: () => node.children, // children only, of any kind
     showModal() {node.open = node.modal = true;}, show() {node.open = true; node.modal = false;},
-    focus() {},
+    focus() {}, scrollIntoView() {node.scrolled = (node.scrolled || 0) + 1;},
     close() {node.open = false; node.dispatchEvent(new Event('close'));},
     before(...nodes) {thumbs.push(...nodes.map((image) => image.src));},
     remove() {
@@ -201,12 +201,18 @@ class Context {
 }
 class Socket {
   static OPEN = 1; static CLOSED = 3;
-  constructor(url) { this.url = url; this.readyState = 1; this.sent = []; sockets.push(this); }
-  send(data) { this.sent.push(data); }
+  constructor(url) {
+    this.url = url; this.readyState = 1; this.sent = []; this.viewing = []; sockets.push(this);
+  }
+  // Whether the chat is in view (live._nudge) is kept apart from the turns and answers.
+  send(data) {
+    const { action, on } = JSON.parse(data);
+    if (action === 'viewing') this.viewing.push(on); else this.sent.push(data);
+  }
   close() { this.readyState = 3; }
 }
 let initiallyEnded = false;
-const navigator = {audioSession, wakeLock: {request: async () => {
+const navigator = {audioSession, serviceWorker: new EventTarget(), wakeLock: {request: async () => {
   const lock = {released: false, async release() {this.released = true;}};
   locks.push(lock); return lock;
 }}, mediaDevices: {getUserMedia: async () => {
@@ -215,7 +221,15 @@ const navigator = {audioSession, wakeLock: {request: async () => {
   const stream = {getTracks: () => [track], getAudioTracks: () => [track]};
   streams.push(stream); return stream;
 }}};
-const sandbox = {document, window, navigator, AudioContext: Context, WebSocket: Socket,
+// Cache Storage, where sw.js records a "Chat needs you" tap: by cache name and key.
+const tapped = new Map();
+const caches = {open: async (name) => ({
+  match: async (key) => {
+    const entry = tapped.get(`${name} ${key}`);
+    return entry && {json: async () => entry};
+  },
+  delete: async (key) => tapped.delete(`${name} ${key}`)})};
+const sandbox = {document, window, navigator, caches, AudioContext: Context, WebSocket: Socket,
   appendChatMarkdown, since,
   AudioWorkletNode: class { constructor() {this.port = {};} connect() {} disconnect() {} },
   Audio: class {
@@ -401,6 +415,11 @@ def test_chat_opens_a_text_session_without_the_mic_minimizes_and_sends_images():
   $('voice-close').onclick();
   assert.equal(dialog.open, false); assert.equal(bubble.hidden, false);
   assert.equal(live.isActive(), true); assert.equal(sockets[0].readyState, 1);
+  assert.deepEqual(sockets[0].viewing, [false]); // a card now would push "Chat needs you"
+  // A provider reconnect drops what it hears meanwhile (live._hold), so the view goes again.
+  sockets[0].onmessage({data: JSON.stringify({type: 'status', status: 'reconnecting'})});
+  sockets[0].onmessage({data: JSON.stringify({type: 'status', status: 'listening'})});
+  assert.deepEqual(sockets[0].viewing, [false, false]);
   sockets[0].onmessage({data: JSON.stringify({type: 'transcript', role: 'model', text: 'hi'})});
   assert.equal(bubble.classList.contains('unread'), true);
   sockets[0].onmessage({data: JSON.stringify({type: 'propose', id: 'p1', text: 'Send to work'})});
@@ -408,6 +427,7 @@ def test_chat_opens_a_text_session_without_the_mic_minimizes_and_sends_images():
   sockets[0].onmessage({data: JSON.stringify({type: 'decided', id: 'p1', ok: true})});
   assert.equal(badge.textContent, '');
   bubble.onclick(); assert.equal(dialog.open, true); assert.equal(bubble.hidden, true);
+  assert.deepEqual(sockets[0].viewing, [false, false, true]);
   // A card's Open goes to its pane without answering it: still pending on the bubble,
   // and still pending in the log when the user comes back to approve.
   sockets[0].onmessage({data: JSON.stringify(
@@ -442,6 +462,82 @@ def test_chat_opens_a_text_session_without_the_mic_minimizes_and_sends_images():
 })().catch((error) => {console.error(error); process.exitCode = 1;});
 """, {"version": "v", "live_enabled": True,
       "live_models": [{"label": "Gemini", "hint": "voice"}, {"label": "Sonnet", "text": True}]})
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+def test_chat_needs_you_tap_restores_the_minimized_chat_holding_its_card():
+    _run_live(r"""
+(async () => {
+  const $ = (id) => document.getElementById(id), dialog = $('voice-dialog');
+  // sw.js's question for one card id: what the page did, and what it answered.
+  const tap = (chat) => {
+    const replies = [];
+    navigator.serviceWorker.dispatchEvent(Object.assign(new Event('message'),
+      {data: {chat}, ports: [{postMessage: (mine) => replies.push(mine)}]}));
+    return replies;
+  };
+  await live.refresh();
+  $('chat').onclick(); await flush();
+  sockets[0].onmessage({data: JSON.stringify({type: 'status', status: 'listening'})});
+  $('voice-close').onclick();
+  sockets[0].onmessage({data: JSON.stringify({type: 'propose', id: 'p1', text: 'Send to work'})});
+  const actions = $('voice-log').children.at(-1).lastChild, before = actions.scrolled;
+  assert.equal(dialog.open, false);
+  // Another tab's card: this chat stays minimized and says no.
+  assert.deepEqual(tap('p2'), [false]); assert.equal(dialog.open, false);
+  // Its own card: the minimized chat comes back with the card in view.
+  assert.deepEqual(tap('p1'), [true]);
+  assert.equal(dialog.open, true); assert.equal(actions.scrolled, before + 1);
+  completed = true;
+})().catch((error) => {console.error(error); process.exitCode = 1;});
+""", {"version": "v", "live_enabled": True, "live_models": [{"label": "Sonnet", "text": True}]})
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+def test_chat_needs_you_tap_whose_message_was_lost_is_pulled_when_the_page_comes_back():
+    _run_live(r"""
+(async () => {
+  const $ = (id) => document.getElementById(id), dialog = $('voice-dialog');
+  // What sw.js records on a tap, `ago` ms back; and the page's reads of it, now and later.
+  const record = (chat, ago = 0) =>
+    tapped.set('chat-tap /__tapped-chat', {chat, at: Date.now() - ago});
+  const reads = async () => {
+    [...timers].filter((t) => t.name === 'pullTap').forEach((t) => t()); await flush();
+  };
+  const back = async (event = 'visibilitychange') => {
+    document.hidden = true; document.dispatchEvent(new Event('visibilitychange'));
+    document.hidden = false;
+    (event === 'focus' ? window : document).dispatchEvent(new Event(event));
+    await reads();
+  };
+  // A killed page's boot finds the tap with no chat to bring back, and starts none.
+  record('p1'); await reads();
+  assert.ok(!dialog.open); assert.equal(sockets.length, 0);
+  await live.refresh();
+  $('chat').onclick(); await flush();
+  sockets[0].onmessage({data: JSON.stringify({type: 'status', status: 'listening'})});
+  $('voice-close').onclick();
+  sockets[0].onmessage({data: JSON.stringify({type: 'propose', id: 'p1', text: 'Send to work'})});
+  const actions = $('voice-log').children.at(-1).lastChild, before = actions.scrolled;
+  // The worker's message never arrives (iOS waking the page); only the record is there.
+  record('p1', 61000); await back(); // too old: a tap from some other time
+  assert.equal(dialog.open, false);
+  record('p2'); await back(); // another tab's card: left for that tab
+  assert.equal(dialog.open, false); assert.equal(tapped.size, 1);
+  record('p1'); await back();
+  assert.equal(dialog.open, true); assert.equal(actions.scrolled, before + 1);
+  assert.equal(tapped.size, 0); // spent
+  // Minimized again, a later return to the app leaves it so.
+  $('voice-close').onclick(); await back('focus');
+  assert.equal(dialog.open, false);
+  // When the message does arrive it spends the record, so the read after it adds nothing.
+  record('p1');
+  const message = Object.assign(new Event('message'), {data: {chat: 'p1'}, ports: []});
+  navigator.serviceWorker.dispatchEvent(message); await flush(); await back('pageshow');
+  assert.equal(dialog.open, true); assert.equal(actions.scrolled, before + 2);
+  assert.equal(tapped.size, 0);
+})().catch((error) => {console.error(error); process.exitCode = 1;});
+""", {"version": "v", "live_enabled": True, "live_models": [{"label": "Sonnet", "text": True}]})
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
