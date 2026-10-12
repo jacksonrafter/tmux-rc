@@ -12,7 +12,7 @@ import { overscroll, overscrollState, RESIST_PX, IDLE_MS } from "/m/overscroll.j
 import { tmuxKey, inputQueue } from "/m/keys.js";
 import { setupSidebar } from "/m/sidebar.js";
 import { renderUsage, paneAccount, shownUsage } from "/m/usage.js";
-import { renderLoops } from "/m/loops.js";
+import { renderLoops, renderLoopsCard } from "/m/loops.js";
 
 const refreshViewPicker = headerPicker(document.getElementById("review-layout"));
 
@@ -108,10 +108,10 @@ const reviewing = () => effectiveLayout() !== "focus";
 const terminalVisible = () => reviewing() || view === "terminal";
 const overviewVisible = () => reviewing() || view === "summary";
 const drafts = new Map();
-// page: a dashboard card's own view (url-state.js PAGES), which replaces the page. Opened
-// from its card, Back steps back to that entry rather than stacking a second dashboard on
-// it, and lands on the card it came from.
-let dashboard = false, page = null, pageFrom = null;
+// page: a dashboard card's own view (url-state.js PAGES), which replaces the page; leaving
+// it lands on its card (CARDS).
+let dashboard = false, page = null;
+const CARDS = { heat: "heat-card", usage: "usage-panel", loops: "loops-card" };
 const dashboardVisible = () => !active && (WIDE.matches || dashboard);
 let panes = [], statePanes = [], active = null, view = "summary", filter = "all", loaded = false, booted = false, tmuxRunning = true;
 let focusPushComposer = false;
@@ -217,7 +217,9 @@ function navigate(id = null, nextView = "summary", { mode } = {}) {
   const next = formatHash({ pane: id, view: nextView, dashboard: nextView === "dashboard" || !!nextPage, page: nextPage, filter, sort });
   const current = location.hash.slice(1);
   if (next !== current) {
-    history[`${mode || historyMode(current, next)}State`](null, "", next ? `#${next}` : location.pathname + location.search);
+    // A replaced entry keeps its state (a card's view stays "from its card"); a new screen starts bare.
+    const how = mode || historyMode(current, next);
+    history[`${how}State`](how === "replace" ? history.state : null, "", next ? `#${next}` : location.pathname + location.search);
   }
   route();
 }
@@ -225,8 +227,10 @@ function navigate(id = null, nextView = "summary", { mode } = {}) {
 // Filter and sort change the list, not the screen: with the sidebar beside an open pane
 // (wide layout) the pane, its tab and a dashboard view must survive them; on a phone a
 // filter tap is a request for the list.
-const openPage = (name, card) => { navigate(null, name); pageFrom = card; };
-const closePage = () => pageFrom ? history.back() : navigate(null, "dashboard", { mode: "replace" });
+// Opened from its card, a view's entry says so in history.state, which survives a reload and
+// Back/Forward; its Back then steps back rather than stacking a second dashboard entry.
+const openPage = (name) => { navigate(null, name); history.replaceState({ fromCard: true }, ""); };
+const closePage = () => history.state?.fromCard ? history.back() : navigate(null, "dashboard", { mode: "replace" });
 const stayPut = () => navigate(active, active ? view : dashboard && WIDE.matches ? page || "dashboard" : "summary");
 
 // Leaving a pane the user did not choose to leave: it closed under them, or a deep link
@@ -242,15 +246,13 @@ function leaveMissingPane(id) {
 }
 
 function route() {
-  const wasDashboardVisible = dashboardVisible(), wasPage = page, from = pageFrom;
+  const wasDashboardVisible = dashboardVisible(), wasPage = page;
   const state = parseHash(location.hash, defaultView());
   const changed = state.pane !== active;
   active = state.pane;
   focusPushComposer = state.compose;
   ({ dashboard, view, filter, sort, page } = state);
-  if (!page) pageFrom = null;
   if (page !== wasPage) { $("dash-page").replaceChildren(); $("dash-page")._signature = null; } // each view builds afresh
-  if (active) returnPane = null;
   $("sort").ariaLabel = `Sort: ${sort === "updated" ? "Last updated" : "Session order"}`;
   if (changed) {
     if (active) $("reply").replaceWith(draft().editor);
@@ -266,11 +268,9 @@ function route() {
   // aborted at once, so every navigation fetched events twice.
   restartDetail();
   render();
-  if (wasPage && !page && dashboardVisible()) { // back at the card, the keyboard on its Details
-    from?.scrollIntoView({ block: "center" });
-    from?.querySelector('[data-key^="details:"]')?.focus({ preventScroll: true });
-  }
-  if (page && !wasPage) $("landing").scrollTop = 0;
+  // Focus follows: into the view's Back, then back to the card's Details.
+  if (wasPage && !page && dashboardVisible()) { $(CARDS[wasPage]).scrollIntoView({ block: "center" }); $(CARDS[wasPage]).querySelector('[data-key^="details:"]')?.focus({ preventScroll: true }); }
+  if (page && !wasPage) { $("landing").scrollTop = 0; $("dash-page").querySelector("button")?.focus({ preventScroll: true }); }
   if (dashboardVisible() && !wasDashboardVisible) {
     refreshHistory(true);
   }
@@ -375,30 +375,11 @@ function renderPhoneList(subset) {
   });
 }
 
-// The wide-screen main column before a pane is picked. Deliberately the SAME numbers the
-// filter tabs already show — a second count that disagreed with the tabs would be worse
-// than no count — plus panes blocked on you. Rows navigate exactly like sidebar rows.
-function landingRows(id, subset) {
-  show(id, !!subset.length);
-  reconcile($(id + "-list"), subset, (p) => p.pane_id, () => {
-    const b = document.createElement("button");
-    b.className = "landing-row";
-    b.innerHTML = '<span class="t"></span><span class="m"></span>';
-    return b;
-  }, (node, p) => {
-    node.onclick = () => navigate(p.pane_id);
-    markEnding(node, p);
-    text(node.querySelector(".t"), paneName(p));
-    text(node.querySelector(".m"), `${activityLabel(p)} · ${p.session} / ${p.window_name || p.pane_id}`);
-  });
-}
-
 function renderLanding() {
   if (page === "heat") return renderHeatView($("dash-page"), $("session-atlas")._scope || {}, licon, closePage);
   if (page === "usage") return paintUsage();
-  const waiting = panes.filter(needsYou);
+  if (page === "loops") return renderLoops(cardView("Open loops", loopsView), loops, navigate, licon);
   paintUsage(); // follows the tool chips
-  show("landing-back", panes.some((p) => p.pane_id === returnPane));
   // With panes, the atlas speaks for itself (its filter row is labelled); the heading is
   // only for the loading and empty states, and hides itself when blank (style.css).
   text($("landing-title"), !booted ? "Reading sessions…" : panes.length ? "" : "No panes yet");
@@ -411,9 +392,8 @@ function renderLanding() {
     renderList();
     navigate();
     $("sessions").scrollTop = $("side-list").scrollTop = 0;
-  }, licon, $("usage-panel"), $("landing-foot"), () => openPage("heat", $("landing-foot")));
-  landingRows("landing-attention", waiting);
-  renderLoops($("landing-loops"), loops, navigate, licon);
+  }, licon, [$("landing-cards")], $("heat-card"), () => openPage("heat"), $("radar-card"));
+  renderLoopsCard($("loops-card"), loops, openLane, licon);
 }
 
 // Drag the seam between the sidebar and the main column. Width is a CSS variable the
@@ -567,7 +547,7 @@ reviewDivider.ondblclick = () => sizeReview(true, effectiveLayout() === "side" ?
 // capped so the pane's flexible row (the terminal, or the overview alone) keeps
 // FLEET_ROOM, which a short window or a tall stacked overview would otherwise take.
 const FLEET_KEY = "tmuxrc-fleet-height", STRIP = 40, MEDIUM = 300, FLEET_ROOM = 120;
-let fleetHeight = STRIP, fleetShown = STRIP, returnPane = null, returnView = "summary";
+let fleetHeight = STRIP, fleetShown = STRIP;
 try { fleetHeight = Number(localStorage.getItem(FLEET_KEY)) || STRIP; } catch {}
 const fleetHandle = $("fleet-handle");
 function sizeFleet(px = fleetHeight, mode = "") {
@@ -600,11 +580,9 @@ fleetHandle.onkeydown = (e) => {
   if (!step) return;
   e.preventDefault(); sizeFleet(fleetShown + step, "drag");
 };
-// The strip's Dashboard swaps the pane for the dashboard page; its Back returns to the pane.
-// Opening it again from the dashboard keeps the pane Back returns to.
-const openDashboard = () => { if (active) [returnPane, returnView] = [active, view]; navigate(null, "dashboard"); };
-$("landing-back").onclick = () => navigate(returnPane, returnView); // the tab the user left, too
-html($("landing-back"), licon("back", 18));
+// The strip's Dashboard swaps the pane for the dashboard page. The dashboard has no Back to
+// the pane: the sidebar and the tab bar reach every pane, and the browser's Back returns to it.
+const openDashboard = () => navigate(null, "dashboard");
 function renderFleetSplit() {
   if (!WIDE.matches || !active) return;
   renderFleet($("fleet"), panes, { open: fleetShown > STRIP, icon: licon, toggle: foldFleet, dashboard: openDashboard });
@@ -626,13 +604,28 @@ const paintUsage = () => {
   show("usage-panel", board.length > 0);
   renderUsage($("usage-board"), board, { wide: true });
   if (page !== "usage") return;
-  if (!$("dash-page").contains(usageView)) $("dash-page").replaceChildren(pageHead("Plan usage", licon, closePage), usageView);
-  renderUsage(usageView.firstChild, board, { wide: true, detail: true });
+  // A tool filter with no meters (reached by Forward, say) shows them all rather than a blank view.
+  renderUsage(cardView("Plan usage", usageView).firstChild, board.length ? board : usage, { wide: true, detail: true });
 };
 const usageView = document.createElement("section");
 usageView.className = "atlas-panel";
 usageView.innerHTML = '<div class="usage-board usage-full" role="group" aria-label="Plan usage"></div>';
-detailCard($("usage-panel"), "Plan usage", "", () => openPage("usage", $("usage-panel")));
+detailCard($("usage-panel"), "Plan usage", "", () => openPage("usage"));
+const loopsView = document.createElement("section");
+loopsView.id = "landing-loops";
+loopsView.ariaLabel = "Open loops";
+detailCard($("loops-card"), "Open loops", "", () => openPage("loops"));
+// A lane's count on the card opens the view at that lane, unfolded.
+function openLane(lane) {
+  openPage("loops");
+  const at = loopsView.querySelector(`[data-lane="${lane}"]`);
+  if (at) { at.open = true; at.scrollIntoView(); at.firstChild.focus({ preventScroll: true }); }
+}
+// A card's view: its head over `node`, built once a visit (route() empties #dash-page).
+function cardView(title, node) {
+  if (!$("dash-page").contains(node)) $("dash-page").replaceChildren(pageHead(title, licon, closePage), node);
+  return node;
+}
 // Plan usage and open loops are both cached by the server; a minute is fresh enough.
 async function refreshCached() {
   if (Date.now() - cachedAt < 60000) return;
@@ -1232,7 +1225,7 @@ $("usage-mode").onclick = () => {
 const openUsage = () => {
   const scope = $("session-atlas")._scope;
   if (scope && !usage.some((a) => a.provider === scope.tool)) scope.tool = "";
-  openDashboard(); openPage("usage", $("usage-panel"));
+  openDashboard(); openPage("usage");
 };
 $("usage").onclick = openUsage;
 $("usage").onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openUsage(); } };
