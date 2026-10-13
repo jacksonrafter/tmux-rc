@@ -22,7 +22,7 @@ export function setupAccounts({ request, post, licon, notice, repaint, sessions,
   const ofPane = (id) => { const p = profiles.find((a) => a.panes.includes(id)); return p && several(p.provider) ? p : null; };
   const active = () => { const p = any() && byDir(filter); return p?.signed_in ? p : null; };
   const dot = (p) => `<i class="acct-dot" style="--a:var(--acct-${p.color})"></i>`;
-  const badge = (p, inner = esc(p.name)) => `<span class="acct-badge" style="--a:var(--acct-${p.color})" title="${esc(`${p.name}: ${p.tilde}`)}">${dot(p)}${inner}</span>`;
+  const badge = (p, after = "") => `<span class="acct-badge" style="--a:var(--acct-${p.color})" title="${esc(`${p.name}: ${p.tilde}`)}">${dot(p)}<span>${esc(p.name)}</span>${after}</span>`;
   // The account a new window in this session starts on: the dir its tmux environment sets,
   // else (nothing sets it) the provider's standard dir; null if that is no signed-in account.
   const defaultOf = (session, provider) => {
@@ -61,7 +61,7 @@ export function setupAccounts({ request, post, licon, notice, repaint, sessions,
     $("more-menu").classList.toggle("filtered", !!on);
     $("more-menu").style.setProperty("--a", on ? `var(--acct-${on.color})` : "");
     pill.hidden = !on;
-    pill.innerHTML = on ? `Filtered: ${badge(on, `${esc(on.name)}<button type="button" aria-label="Clear the account filter" title="Clear">${licon("x", 14)}</button>`)}` : "";
+    pill.innerHTML = on ? `Filtered: ${badge(on, `<button type="button" aria-label="Clear the account filter" title="Clear">${licon("x", 14)}</button>`)}` : "";
   }
   menuFilter.onclick = (e) => { const b = e.target.closest("[data-dir]"); if (b) setFilter(b.dataset.dir); };
   pill.onclick = (e) => { if (e.target.closest("button")) setFilter(null); };
@@ -75,31 +75,35 @@ export function setupAccounts({ request, post, licon, notice, repaint, sessions,
     // A row's dirs can be several profiles of one login: the filtered one, if it is among them.
     return list.map((a) => { const mine = (a.dirs || []).map(byDir).filter((p) => p?.signed_in); return { ...a, acct: mine.includes(on) ? on : mine[0] }; })
       .filter((a) => a.acct && (!on || a.acct === on))
-      .map((a) => ({ ...a, label: several(a.provider) ? a.acct.name : null }));
+      .map((a) => several(a.provider) ? { ...a, label: a.acct.name, chip: badge(a.acct) } : { ...a, label: null });
   }
   // Already full first, then full soonest, then the highest pace at the reset; unreadable last.
   const urgency = (w) => !w ? -1 : w.pct >= 100 ? Infinity : w.limit_at ? 1e15 - w.limit_at : w.projected ?? w.pct;
   const byUrgency = (list) => list.flatMap((a) => a.windows?.length ? a.windows.map((w) => ({ ...a, windows: [w] })) : [a])
     .sort((a, b) => urgency(b.windows?.[0]) - urgency(a.windows?.[0]));
-  // One swipeable row: the edge fades only while there is more that way.
+  // One swipeable row: the edge fades only while there is more that way, rechecked on a
+  // resize too (a wider strip fits more meters: style.css).
   function strip(el, on) {
     el.classList.toggle("acct-strip", on);
-    const edge = () => {
+    el.onscroll ||= () => { // reads the class: the board's groups() may since have dropped it
+      const on = el.classList.contains("acct-strip");
       el.classList.toggle("more-r", on && el.scrollLeft + el.clientWidth < el.scrollWidth - 2);
       el.classList.toggle("more-l", on && el.scrollLeft > 2);
     };
-    el.onscroll = edge; edge();
+    el.onscroll();
+    (el._resize ||= new ResizeObserver(() => el.onscroll())).observe(el);
   }
   // The wide dashboard: one row of capped meters, each account's group labelled, details in
-  // its tooltip; it wraps only when they don't fit.
+  // its tooltip; it wraps only when they don't fit. The label names the account once over
+  // its meters, so they drop the chip.
   function groups(el, list, render) {
-    el.className = "usage-groups";
+    el.className = "usage-groups"; el.hidden = !list.length; // a board drawn before the accounts came may have hidden it
     const markup = list.map((a, i) => {
       const p = a.acct, tip = [p.name, p.who, p.plan, p.tilde, `${p.panes.length} pane${p.panes.length === 1 ? "" : "s"}`].filter(Boolean).join(" · ");
-      return `<div class="ug" data-i="${i}"><div class="ug-label" title="${esc(tip)}">${several(p.provider) ? dot(p) : ""}<b>${esc(p.name)}</b></div><div class="ug-cells"></div></div>`;
+      return `<div class="ug" data-i="${i}"><div class="ug-label" title="${esc(tip)}">${several(p.provider) ? badge(p) : `<b>${esc(p.name)}</b>`}</div><div class="ug-cells"></div></div>`;
     }).join("");
     if (el._groups !== markup) { el.innerHTML = markup; el._groups = markup; }
-    el.querySelectorAll(".ug").forEach((g) => render(g.lastChild, [{ ...list[g.dataset.i], label: null }]));
+    el.querySelectorAll(".ug").forEach((g) => render(g.lastChild, [{ ...list[g.dataset.i], label: null, chip: null }]));
   }
 
   // ---- New window: an account per provider with several, preset to the session's default ----
@@ -294,6 +298,9 @@ export function setupAccounts({ request, post, licon, notice, repaint, sessions,
     loops: (report) => !active() || !report?.lanes ? report : { ...report, lanes: Object.fromEntries(Object.entries(report.lanes).map(([lane, gs]) =>
       [lane, gs.map((g) => ({ ...g, items: g.items.filter((i) => [...(i.panes || []), i.pane].some((p) => p && matches(p))) })).filter((g) => g.items.length)])) },
     badge: (paneId) => { const p = ofPane(paneId); return p ? badge(p) : ""; },
+    // A session's own default, per provider with several: where its dir differs from the
+    // global environment's (under "", which the server folds into every session).
+    sessionBadge: (session) => Object.keys(ENV).filter((pr) => several(pr) && set(session, pr) && defaults[session][pr] !== defaults[""]?.[pr]).map((pr) => defaultOf(session, pr)).filter(Boolean).map((p) => badge(p)).join(""),
     // The consent card: which account a chat action lands on.
     consent: (paneId) => { const p = ofPane(paneId); return p ? `<small class="voice-meta acct-on">on ${badge(p)} ${esc(p.tilde)}. Sending never changes a pane's account.</small>` : ""; },
     // For the fast-follow "Move pane to another account": the profile by config dir.

@@ -58,15 +58,27 @@ the wide layout had no menu before.
 
 - **Badges** ("● Work") on the phone's rows, the sidebar's rows and the pane header, in
   the account's colour. The pane header puts it first on a phone, which ellipsizes the
-  end.
+  end. Every place that names an account draws this one chip, so the same account never
+  looks two ways on one screen; a long name truncates inside it.
+- **Session cards** on the dashboard carry the chip of the session's own default (the
+  dir its tmux environment sets), and nothing when it sets none or sets what the global
+  environment already does: a session that starts new windows on an account other
+  sessions do not is worth seeing at a glance; a default every session shares is not.
 - **Usage strip:** with several accounts the meters become one row that swipes sideways
   and snaps per meter, most urgent first (full soonest, then the highest pace at the
-  reset). Two meters fit on a phone, and a fade marks an edge with more beyond it. Seven
-  meters in a two-column grid would push the list off a phone's screen, and what needs
-  attention must never sit behind a swipe.
+  reset). Two meters fit on a phone with a third of the next peeking in under a fade, so
+  the row reads as one that scrolls; a two-meter split looked complete and hid the swipe.
+  Seven meters in a two-column grid would push the list off a phone's screen, and what
+  needs attention must never sit behind a swipe. Each meter names its account with the
+  same chip as the rows, in its bottom corner across from the reset, and its title keeps
+  just the window: a name in the title was truncated first, read as part of the window
+  ("7d QSI"), and left a one-account provider's meter looking unnamed beside it.
 - **Dashboard Plan usage:** wide, one row of 180px meters grouped per account, each group
-  labelled with its name and the details (who, plan, dir, panes) in its tooltip; it wraps
-  only when the groups do not fit. A phone's dashboard uses the strip.
+  labelled with its chip and the details (who, plan, dir, panes) in its tooltip. The chips sit
+  on the card's heading line, centred over their groups, so the labels add no row. The row wraps
+  only when the groups do not fit. The label names the account once over its meters, so
+  they carry no chip: repeating it in every 180px meter is noise. A phone's dashboard
+  uses the strip, chips included.
 - **Filter** in ☰ (All, then each account), because it is a mode you set and forget, not a
   control every screen needs. While on, a "Filtered: Work ✕" pill shows under the header
   (in the sidebar on wide) and ☰ carries a dot. It applies to the list, the strip and the
