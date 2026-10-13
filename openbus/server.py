@@ -29,6 +29,7 @@ import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
+from typing import Literal
 
 # Load .env BEFORE importing the watcher/llm/telemetry chain — those read config from
 # os.environ at import time (model, GOOGLE_CLOUD_PROJECT, OTEL endpoint). Without this, a
@@ -75,7 +76,7 @@ from fastapi.staticfiles import StaticFiles  # noqa: E402
 from PIL import Image  # noqa: E402
 from pydantic import BaseModel, ConfigDict, Field  # noqa: E402
 
-from . import agent_history, expunge, telemetry, tmux  # noqa: E402
+from . import accounts, agent_history, expunge, telemetry, tmux  # noqa: E402
 from .classify import picker_digest, picker_read  # noqa: E402
 from .config import json_list  # noqa: E402
 from .history import History, default_path  # noqa: E402
@@ -231,12 +232,38 @@ class ExpungeBody(BaseModel):
 class NewWindowBody(BaseModel):
     session: str
     launcher: str  # label of a configured launcher — never a raw command
+    account: str | None = None  # a listed profile's config dir (accounts.py); None = inherit
 
 
 class NewSessionBody(BaseModel):
     name: str  # checked in new_session, not here, so a refusal is audited
     cwd: str = "~"
     launcher: str | None = None  # a configured label as above; None = a plain shell
+    account: str | None = None  # as in NewWindowBody
+
+
+class AccountBody(BaseModel):
+    provider: Literal["claude", "codex"]
+    dir: str = Field(min_length=1, max_length=400)
+    label: str = Field("", max_length=40)
+    link: list[str] = []  # names from accounts.SHARED
+
+
+class AccountEditBody(BaseModel):
+    dir: str
+    label: str | None = Field(None, max_length=40)  # None: unchanged
+    forget: bool = False
+
+
+class AccountSessionBody(BaseModel):
+    dir: str
+    session: str
+    provider: Literal["claude", "codex"] | None = None  # with dir "": clear its default
+
+
+class SignInWindowBody(BaseModel):
+    pane_id: str
+    pid: str
 
 
 # Agent launchers offered by the dock's "+" menu. Configurable so a fleet can offer
@@ -370,7 +397,13 @@ def _unavailable(command: str, path: str | None = None, *,
 def _launcher(e: dict) -> dict:
     if not (e.get("label") and e.get("command")):
         raise ValueError("launcher needs label and command")
-    return {"label": str(e["label"]), "command": str(e["command"]), "icon": str(e.get("icon", ""))}
+    icon = str(e.get("icon", ""))
+    # Which agent's accounts it can launch on: explicit, else read from a built-in icon.
+    provider = str(e.get("provider") or (icon if icon in accounts.ENV else ""))
+    if provider and provider not in accounts.ENV:
+        raise ValueError(f"launcher provider must be one of {', '.join(accounts.ENV)}")
+    return {"label": str(e["label"]), "command": str(e["command"]), "icon": icon,
+            "provider": provider}
 
 
 def _launchers() -> list[dict]:
@@ -381,7 +414,7 @@ def _launchers() -> list[dict]:
     # has visibly reverted sends you to the config and the log line waiting there. The Live
     # model table needs the same rule for a stronger reason (a mis-parsed entry must never
     # be offered at a made-up price), and one rule for both is one thing to know.
-    return json_list("TMUXRC_LAUNCHERS", _DEFAULT_LAUNCHERS, _launcher)
+    return json_list("TMUXRC_LAUNCHERS", [_launcher(e) for e in _DEFAULT_LAUNCHERS], _launcher)
 
 
 class ClientErrorBody(BaseModel):
@@ -461,7 +494,7 @@ async def lifespan(app: FastAPI):
     _advertise_scratch()
     app.state.push = PushManager(app.state.watcher)
     app.state.push.start()
-    app.state.usage = PlanUsage(app.state.history)
+    app.state.usage = PlanUsage(app.state.history, profiles=accounts.metered)
     app.state.loops = OpenLoops()
     tasks = [asyncio.create_task(app.state.usage.run(app.state.watcher)),
              asyncio.create_task(app.state.loops.run(app.state.watcher))]
@@ -1021,7 +1054,7 @@ def launchers():
     out = []
     path = tmux.server_path()  # once: the same answer for every entry
     for e in _launchers():
-        item = {"label": e["label"], "icon": e["icon"]}
+        item = {"label": e["label"], "icon": e["icon"], "provider": e.get("provider", "")}
         why = _unavailable(e["command"], path)
         if why:
             item["unavailable"] = why
@@ -1052,13 +1085,124 @@ def new_window(body: NewWindowBody, request: Request):
     if why:
         _audit(request, "new_window", "-", detail, outcome="rejected: command not found")
         raise HTTPException(400, why)
+    command = _on_account(entry, body.account)
+    if command is None:
+        _audit(request, "new_window", "-", detail, outcome="rejected: unknown account")
+        raise HTTPException(404, "unknown account")
     try:
-        pane_id = tmux.new_window(body.session, entry["label"], entry["command"])
+        pane_id = tmux.new_window(body.session, entry["label"], command)
     except Exception as e:
         _audit(request, "new_window", "-", detail, outcome=f"error: {e}"[:80])
         raise
     _audit(request, "new_window", pane_id, detail)
     return _opened(pane_id)
+
+
+def _on_account(entry: dict, account: str | None) -> str | list[str] | None:
+    """The launcher's command, pinned to `account` (a listed profile's dir) if one is
+    asked for; None when that is no account of the launcher's provider."""
+    if account is None:
+        return entry["command"]
+    provider = entry.get("provider")
+    profile = accounts.find(account, provider) if provider in accounts.ENV else None
+    return profile and accounts.command(profile["provider"], profile["dir"], entry["command"])
+
+
+def _refuse(request: Request, action: str, detail: str, status: int, why: str):
+    _audit(request, action, "-", detail, outcome=f"rejected: {why}"[:80])
+    raise HTTPException(status, why)
+
+
+@app.get("/api/accounts")
+def get_accounts():
+    """The agent accounts (accounts.py), the panes on each, and sessions' defaults."""
+    watcher = app.state.watcher
+    return accounts.report(list(watcher.states), watcher.pane_birth)
+
+
+@app.post("/api/accounts")
+def add_account(body: AccountBody, request: Request):
+    """Create or reuse a config dir and list it; the sign-in is the provider's own, in a
+    window opened by /api/accounts/login."""
+    detail = f"provider={body.provider} dir={body.dir[:120]!r} link={body.link!r}"[:240]
+    try:
+        added = accounts.add(body.provider, body.dir, body.label, body.link)
+    except FileExistsError as e:
+        _refuse(request, "add_account", detail, 409, str(e))
+    except (ValueError, OSError) as e:
+        _refuse(request, "add_account", detail, 422, str(e))
+    _audit(request, "add_account", "-", detail)
+    return added
+
+
+@app.put("/api/accounts")
+def edit_account(body: AccountEditBody, request: Request):
+    """Rename an account (its label only) or forget it (off the list; nothing deleted)."""
+    detail = f"dir={body.dir[:120]!r} label={body.label!r} forget={body.forget}"[:240]
+    try:
+        accounts.edit(body.dir, body.label, forget=body.forget)
+    except LookupError as e:
+        _refuse(request, "edit_account", detail, 404, str(e))
+    except ValueError as e:
+        _refuse(request, "edit_account", detail, 422, str(e))
+    _audit(request, "edit_account", "-", detail)
+    return {"ok": True}
+
+
+def _session_account(body: AccountSessionBody, request: Request, action: str) -> dict:
+    detail = f"session={body.session[:80]!r} dir={body.dir[:120]!r}"
+    profile = accounts.find(body.dir)
+    if profile is None:
+        _refuse(request, action, detail, 404, "unknown account")
+    if not any(p.session == body.session for p in tmux.list_panes()):
+        _refuse(request, action, detail, 404, "session not found")
+    return profile
+
+
+@app.post("/api/accounts/login")
+def account_login(body: AccountSessionBody, request: Request):
+    """Open a window running the provider's own sign-in on this account's dir. The user
+    signs in there; the daemon never sees a password or a token."""
+    profile = _session_account(body, request, "account_login")
+    argv = accounts.LOGIN[profile["provider"]]
+    if why := _unavailable(argv[0], tmux.server_path()):
+        _refuse(request, "account_login", body.dir[:120], 400, why)
+    pane_id = tmux.new_window(body.session, f"sign in: {profile['name']}"[:40],
+                              accounts.command(profile["provider"], profile["dir"], argv))
+    _audit(request, "account_login", pane_id, f"dir={body.dir[:120]!r}")
+    _SIGN_IN[pane_id] = pid = tmux.pane_pid(pane_id) or ""
+    return {**_opened(pane_id), "pid": pid}
+
+
+# The sign-in windows this daemon opened, pane id -> pid: the only ones its close may end.
+_SIGN_IN: dict[str, str] = {}
+
+
+@app.post("/api/accounts/login/close")
+def account_login_close(body: SignInWindowBody, request: Request):
+    """Close a sign-in window that /api/accounts/login opened, by its exact pane and while
+    that same process still owns it; any other pane is refused untouched."""
+    if not body.pid or _SIGN_IN.get(body.pane_id) != body.pid:
+        _refuse(request, "account_login_close", body.pane_id, 404, "not a sign-in window")
+    _kill_window(request, body.pane_id, "account_login_close", pid=body.pid)
+    _SIGN_IN.pop(body.pane_id)
+    _audit(request, "account_login_close", body.pane_id)
+    return {"ok": True}
+
+
+@app.post("/api/accounts/default")
+def account_default(body: AccountSessionBody, request: Request):
+    """Make an account the session's default (tmux set-environment), or with an empty dir
+    clear the provider's (marked removed: nothing sets it, so the standard dir applies)."""
+    if body.dir or not body.provider:
+        profile = _session_account(body, request, "account_default")
+    elif not any(p.session == body.session for p in tmux.list_panes()):
+        _refuse(request, "account_default", body.session[:80], 404, "session not found")
+    else:
+        profile = {"provider": body.provider, "default": True}
+    accounts.set_default(body.session, profile)
+    _audit(request, "account_default", "-", f"session={body.session[:80]!r} dir={body.dir[:120]!r}")
+    return {"ok": True}
 
 
 def _opened(pane_id: str) -> dict:
@@ -1128,8 +1272,11 @@ def new_session(body: NewSessionBody, request: Request):
     why = entry and _unavailable(entry["command"], path, daemon_path=running)
     if why:
         refuse(400, why)
+    command = entry and _on_account(entry, body.account)
+    if entry and command is None:
+        refuse(404, "unknown account")
     try:
-        pane_id = tmux.new_session(body.name, cwd, entry and entry["command"],
+        pane_id = tmux.new_session(body.name, cwd, command,
                                    entry["label"] if entry else "", env=env)
     except subprocess.CalledProcessError as e:
         if "duplicate session" in (e.stderr or ""):
@@ -1600,7 +1747,7 @@ def _advertise_scratch() -> None:
            "TMUXRC_SCRATCH_LOCAL_URL": f"http://{host}:{port}/scratch"}
     try:
         for name, value in env.items():
-            tmux.set_global_env(name, value if _scratch_dir else None)
+            tmux.set_env(name, value if _scratch_dir else None)
     except (subprocess.CalledProcessError, OSError):  # no server yet, or no tmux binary
         logger.warning("Could not advertise the scratch dir to tmux", exc_info=True)
 
