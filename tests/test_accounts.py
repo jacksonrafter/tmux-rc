@@ -2,7 +2,10 @@
 add flow's dir and links, and launching a pane on an account. Every config dir here is a
 fictional one under tmp_path; no credentials file is ever written or read."""
 import json
+import os
 import stat
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -10,7 +13,9 @@ from fastapi.testclient import TestClient
 
 import openbus.server as S
 import openbus.tmux as T
-from openbus import accounts, plan_usage
+from openbus import accounts, expunge, plan_usage
+
+STARTED = S._started  # before the moving fixture stubs it
 
 
 def _signed_in(path, uuid, **fields):
@@ -311,3 +316,232 @@ def test_a_custom_launcher_names_its_provider(client, home, monkeypatch):
     monkeypatch.setenv("TMUXRC_LAUNCHERS", json.dumps([
         {"label": "Opus", "command": "claude", "icon": "/img/opus.png", "provider": "claud"}]))
     assert "Opus" not in [e["label"] for e in client.get("/api/launchers").json()["launchers"]]
+
+
+SID = "0f1e2d3c-4b5a-4968-8776-655443322110"
+
+
+@pytest.fixture
+def moving(client, home, monkeypatch):
+    """A fictional Claude session on ~/.claude, as Expunge's identify would find it."""
+    src = home / ".claude"
+    (src / f"projects/-p/{SID}/subagents").mkdir(parents=True)
+    (src / f"projects/-p/{SID}.jsonl").write_text('{"type": "user"}\n')
+    (src / f"projects/-p/{SID}/subagents/agent-1.jsonl").write_text("{}\n")
+    (src / f"file-history/{SID}").mkdir(parents=True)
+    (src / f"session-env/{SID}").mkdir(parents=True)  # rebuilt on start: not copied
+    session = expunge.Session("claude", SID, src, home / "agent-history", os.getpid(), "1")
+    pane = T.Pane("work", "1", "w", "0", "%9", "claude", "t")
+    def identify(_pane, _birth, expected):  # as Expunge's, bound to the session named
+        if expected != SID:
+            raise S.HTTPException(409, "the pane runs another session now")
+        return pane, session, ([], [])
+    monkeypatch.setattr(S, "_pane_session", identify)
+    monkeypatch.setattr(S, "_started", lambda *_: True)  # no agent starts here
+    return lambda account, **flags: client.post(
+        "/api/panes/%9/move",
+        json={"birth": "1", "session_id": SID, "dir": str(home / account), **flags})
+
+
+def test_a_move_whose_agent_never_starts_fails_but_keeps_the_copy(home, moving, monkeypatch):
+    monkeypatch.setattr(S, "MOVE_START_S", 0)
+    monkeypatch.setattr(S, "_started", STARTED)  # the real wait: nothing ever runs here
+    r = moving(".claude-personal")
+    assert r.status_code == 500 and "did not start" in r.text
+    assert (home / f".claude-personal/projects/-p/{SID}.jsonl").exists()
+
+
+def test_move_copies_the_session_and_resumes_it_on_the_other_account(client, home, moving):
+    r = moving(".claude-personal")
+    assert r.status_code == 200, r.text
+    dst = home / ".claude-personal"
+    assert (dst / f"projects/-p/{SID}.jsonl").read_text() == '{"type": "user"}\n'
+    assert (dst / f"projects/-p/{SID}/subagents/agent-1.jsonl").exists()
+    assert (dst / f"file-history/{SID}").is_dir() and not (dst / "session-env").exists()
+    assert (home / f".claude/projects/-p/{SID}.jsonl").exists()  # a copy: the original stays
+    argv = next(a for a in client.calls if a[0] == "new-window")
+    assert argv[argv.index("-c") + 1] == os.getcwd() and argv[argv.index("-t") + 1] == "work:"
+    assert argv[argv.index("--") + 1:] == [
+        "env", f"CLAUDE_CONFIG_DIR={dst}", "claude", "--resume", SID]
+    assert "kill" not in str(client.calls)  # the source pane is never touched
+    assert moving(".claude-personal").status_code == 409  # already there: nothing overwritten
+    for account in (".claude-old", ".codex2"):  # signed out, another provider's
+        assert moving(account).status_code == 404
+    assert moving(".claude-personal", session_id="another").status_code == 409
+    r = moving(".claude")  # its own account
+    assert r.status_code == 409 and r.json()["detail"] == "the session is already on that account"
+
+
+def test_an_older_copy_is_replaced_or_resumed_only_when_asked(client, home, moving):
+    dst = home / ".claude-personal"
+    (dst / f"projects/-p/{SID}/subagents").mkdir(parents=True)
+    (dst / f"projects/-p/{SID}/subagents/stale.jsonl").write_text("{}\n")
+    (dst / f"projects/-p/{SID}.jsonl").write_text("old\n")
+    (dst / "projects/-p/other.jsonl").write_text("another session\n")
+    r = moving(".claude-personal")
+    assert r.status_code == 409 and r.json()["detail"]["copied"] > 0  # the sheet's choice
+    assert r.json()["detail"]["resumable"]
+    assert (dst / f"projects/-p/{SID}.jsonl").read_text() == "old\n"
+    r = moving(".claude-personal", resume_existing=True)
+    assert r.status_code == 200 and r.json()["copied"] == []
+    assert (dst / f"projects/-p/{SID}.jsonl").read_text() == "old\n"
+    assert moving(".claude-personal", replace=True).status_code == 200
+    assert (dst / f"projects/-p/{SID}.jsonl").read_text() == '{"type": "user"}\n'
+    assert not (dst / f"projects/-p/{SID}/subagents/stale.jsonl").exists()
+    assert (dst / "projects/-p/other.jsonl").exists()  # only that session's files go
+    argv = [a for a in client.calls if a[0] == "new-window"][-1]
+    assert argv[-2:] == ["--resume", SID]
+    _signed_in(home / ".claude-empty", "u-e")
+    (home / f".claude-empty/file-history/{SID}").mkdir(parents=True)  # no transcript: no resume
+    (home / ".claude-empty/projects/-p").mkdir(parents=True)
+    (home / f".claude-empty/projects/-p/{SID}.jsonl").write_text('{"half')  # nor half a record
+    assert moving(".claude-empty", resume_existing=True).status_code == 409
+    assert moving(".claude-empty").json()["detail"]["resumable"] is False  # so it isn't offered
+
+
+@pytest.mark.parametrize("sign", ["command line", "registration", "unreadable", "open file"])
+def test_a_copy_running_on_the_target_is_never_replaced_or_resumed_twice(home, moving, sign):
+    assert moving(".claude-personal").status_code == 200
+    dst = home / ".claude-personal"
+    held = dst / f"projects/-p/{SID}/subagents/agent-1.jsonl"  # under the session's folder
+    code = {"command line": "import time; time.sleep(30)",
+            "registration": "import time; time.sleep(30)",
+            "unreadable": "import time; time.sleep(30)",
+            "open file": f"import time; f = open({str(held)!r}); "
+                         "print(flush=True); time.sleep(30)"}[sign]
+    argv = [sys.executable, "-c", code, *([SID] if sign == "command line" else [])]
+    env = {**os.environ, "CLAUDE_CONFIG_DIR": str(dst)}
+    agent = subprocess.Popen(argv, env=env, stdout=subprocess.PIPE)
+    try:
+        if sign == "registration":  # Claude's own record of the session, under the agent's pid
+            start = expunge._stat(agent.pid)[19]
+            (dst / "sessions").mkdir()
+            (dst / f"sessions/{agent.pid}.json").write_text(json.dumps(
+                {"pid": agent.pid, "sessionId": SID, "procStart": start}))
+        if sign == "unreadable":  # half written, or whatever: it could be this session's
+            (dst / "sessions").mkdir()
+            (dst / "sessions/1.json").write_text("{")
+        if sign == "open file":
+            agent.stdout.readline()  # open by now
+        for flags in ({}, {"replace": True}, {"resume_existing": True}):
+            r = moving(".claude-personal", **flags)  # the sheet's first tap included
+            assert r.status_code == 409 and "running on that account" in r.json()["detail"]
+    finally:
+        agent.kill()
+        agent.wait()
+    (dst / "sessions/1.json").unlink(missing_ok=True)
+    assert moving(".claude-personal", resume_existing=True).status_code == 200
+    assert moving(".claude-personal", replace=True, resume_existing=True).status_code == 400
+
+
+def test_a_bind_mounted_alias_of_its_own_dir_is_refused(home, moving, monkeypatch):
+    monkeypatch.setattr(accounts.Path, "samefile", lambda *_: True)  # one dir, two mounts
+    r = moving(".claude-personal", replace=True)
+    assert r.status_code == 409 and "already on that account" in r.json()["detail"]
+    session = expunge.Session("claude", SID, home / ".claude", home / "agent-history", 0, "")
+    with pytest.raises(ValueError, match="inside"):
+        accounts.copy_session(session, home / ".claude-personal", replace=True)
+    assert (home / f".claude/projects/-p/{SID}.jsonl").exists()
+
+
+def test_a_move_writes_nothing_through_a_link_out_of_the_account(home, moving, tmp_path):
+    (tmp_path / "elsewhere").mkdir()
+    (home / ".claude-personal/projects").symlink_to(tmp_path / "elsewhere")
+    r = moving(".claude-personal")
+    assert r.status_code == 409 and "links outside" in r.json()["detail"]
+    assert not list((tmp_path / "elsewhere").iterdir())
+    (tmp_path / "elsewhere/-p").mkdir()  # another account's copy, seen through the link
+    (tmp_path / f"elsewhere/-p/{SID}.jsonl").write_text("theirs\n")
+    for flags in ({"replace": True}, {"resume_existing": True}):
+        r = moving(".claude-personal", **flags)
+        assert r.status_code == 409 and "links outside" in r.json()["detail"]
+    assert (tmp_path / f"elsewhere/-p/{SID}.jsonl").read_text() == "theirs\n"
+
+
+def test_a_link_inside_an_older_copy_refuses_its_resume(home, moving, tmp_path):
+    (tmp_path / "outside.jsonl").write_text("{}\n")
+    dst = home / f".claude-personal/projects/-p/{SID}/subagents"
+    dst.mkdir(parents=True)
+    (dst.parent.parent / f"{SID}.jsonl").write_text("{}\n")
+    (dst / "x.jsonl").symlink_to(tmp_path / "outside.jsonl")
+    r = moving(".claude-personal", resume_existing=True)
+    assert r.status_code == 409 and "links outside" in r.json()["detail"]
+
+
+def test_a_link_inside_the_session_refuses_the_move(home, moving, tmp_path):
+    (tmp_path / "outside.jsonl").write_text('{"keep": 1')
+    (home / f".claude/projects/-p/{SID}/subagents/x.jsonl").symlink_to(tmp_path / "outside.jsonl")
+    assert moving(".claude-personal").status_code == 409
+    assert (tmp_path / "outside.jsonl").read_text() == '{"keep": 1'
+    assert not (home / ".claude-personal/projects").exists()
+
+
+def test_a_move_whose_agent_cannot_start_copies_nothing(home, moving, monkeypatch):
+    # On the daemon's PATH, not tmux's: the window would still fail to start it.
+    monkeypatch.setattr(S.shutil, "which", lambda c, path=None: c if path == "/s" else None)
+    assert moving(".claude-personal").status_code == 400
+    assert not (home / ".claude-personal/projects").exists()
+    # A session's own PATH, which the window inherits, wins over the server's.
+    monkeypatch.setattr(T, "show_env", lambda session=None: {"PATH": "/s"} if session else {})
+    assert moving(".claude-personal").status_code == 200
+
+
+def test_exit_types_the_agents_own_exit_into_that_pane_only(client, moving, monkeypatch):
+    sent = []
+    monkeypatch.setattr(T, "send_keys", lambda *a, **k: sent.append((a, k)))
+    def exit_():
+        return client.post("/api/panes/%9/exit", json={"birth": "1", "session_id": SID})
+    assert exit_().status_code == 200
+    (args, kw), = sent
+    assert args == ("%9", "/exit") and kw["expected_pid"] == ""
+    def broken(*_a, **_k):
+        raise OSError("no tmux")
+    monkeypatch.setattr(T, "send_keys", broken)
+    assert exit_().status_code == 500
+    def gone(*_a):
+        raise S.HTTPException(409, "the agent exited")
+    def changed(*_a, **k):  # the agent exited while the send waited for the pane's lock
+        monkeypatch.setattr(S, "_pane_session", gone)
+        k["guard"]()
+    monkeypatch.setattr(T, "send_keys", changed)
+    assert exit_().status_code == 409
+    assert "kill" not in str(client.calls)
+
+
+def test_a_move_refuses_nested_dirs_and_a_session_with_no_transcript(home, moving):
+    nested = _signed_in(home / ".claude/inner", "u-in")
+    accounts.add("claude", str(nested), "Inner", [])
+    assert moving(".claude/inner").status_code == 409  # copytree would chase its own copy
+    (home / f".claude/projects/-p/{SID}.jsonl").write_text('{"first rec')  # mid first write
+    assert moving(".claude-personal").status_code == 409
+    (home / f".claude/projects/-p/{SID}.jsonl").unlink()  # registered, nothing written yet
+    assert moving(".claude-personal").status_code == 409
+    assert not (home / ".claude-personal/projects").exists()
+
+
+def test_a_record_still_being_written_is_left_out_of_the_copy(home, moving):
+    (home / f".claude/projects/-p/{SID}.jsonl").write_text('{"type": "user"}\n{"type": "assi')
+    (home / f".claude/projects/-p/{SID}/subagents/agent-1.jsonl").write_text(
+        "{}\n" + "x" * 70000)  # a cut record longer than the chunk read back
+    assert moving(".claude-personal").status_code == 200
+    dst = home / ".claude-personal/projects/-p"
+    assert (dst / f"{SID}.jsonl").read_text() == '{"type": "user"}\n'
+    assert (dst / f"{SID}/subagents/agent-1.jsonl").read_text() == "{}\n"
+
+
+def test_a_move_that_fails_partway_leaves_nothing_behind(home, moving, monkeypatch):
+    def broken(*_a, **_k):
+        raise OSError("disk full")
+    monkeypatch.setattr(accounts.shutil, "copytree", broken)
+    assert moving(".claude-personal").status_code == 500
+    assert not list((home / ".claude-personal").glob(f"**/{SID}*"))
+
+
+def test_a_codex_thread_moves_with_its_resumed_segments(home):
+    day = home / ".codex/sessions/2026/10/09"
+    day.mkdir(parents=True)
+    for name in (f"T09-00-00-{SID}.jsonl", f"T10-00-00-{SID}_2.jsonl"):
+        (day / f"rollout-2026-10-09{name}").write_text("{}\n")
+    session = expunge.Session("codex", SID, home / ".codex", home / "agent-history", 0, "")
+    assert len(accounts.copy_session(session, home / ".codex2")) == 2
+    assert len(list((home / ".codex2/sessions/2026/10/09").iterdir())) == 2

@@ -229,6 +229,12 @@ class ExpungeBody(BaseModel):
     birth: str  # the pane incarnation the menu was drawn for (its `birth` in /api/state)
 
 
+class MoveBody(ExpungeBody):  # bound to the pane incarnation and session, likewise
+    dir: str  # the target profile's config dir
+    replace: bool = False  # the account has an older copy of the session: copy over it
+    resume_existing: bool = False  # ...or resume that copy as it is
+
+
 class NewWindowBody(BaseModel):
     session: str
     launcher: str  # label of a configured launcher — never a raw command
@@ -1108,9 +1114,9 @@ def _on_account(entry: dict, account: str | None) -> str | list[str] | None:
     return profile and accounts.command(profile["provider"], profile["dir"], entry["command"])
 
 
-def _refuse(request: Request, action: str, detail: str, status: int, why: str):
+def _refuse(request: Request, action: str, detail: str, status: int, why: str, **extra):
     _audit(request, action, "-", detail, outcome=f"rejected: {why}"[:80])
-    raise HTTPException(status, why)
+    raise HTTPException(status, {"message": why, **extra} if extra else why)
 
 
 @app.get("/api/accounts")
@@ -1406,6 +1412,109 @@ def expunge_session(pane_id: str, body: ExpungeBody, request: Request):
                                  "delete its own stored card for the pane yet")
     _audit(request, "expunge", pane_id, detail)
     return {"ok": True, **result, "killed": killed}
+
+
+_MOVES = threading.Lock()
+MOVE_START_S = 5.0  # how long a move holds _MOVES for its agent to show as running
+
+
+def _started(s, target: Path, pane_id: str) -> bool:
+    """Whether the moved agent shows as running on `target` within MOVE_START_S: in the
+    window's own process alone, so a slow start never rescans every process on the box."""
+    pids = [pid] if (pid := tmux.pane_pid(pane_id)) else []
+    deadline = time.monotonic() + MOVE_START_S
+    while not accounts.running(s, target, pids):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+    return True
+
+
+@app.post("/api/panes/{pane_id}/move")
+def move_session(pane_id: str, body: MoveBody, request: Request):
+    """Copy the pane's agent session to another account and resume it there, in a new
+    window of the same session and cwd. The source pane and its files are left as they are.
+    See docs/design/agent-accounts.md."""
+    detail = f"dir={body.dir[:120]!r}"
+    try:
+        pane, s, _ = _pane_session(pane_id, body.birth, body.session_id)
+        cwd = os.readlink(f"/proc/{s.pid}/cwd")
+    except HTTPException as e:
+        _refuse(request, "move_session", detail, e.status_code, e.detail)
+    except OSError:
+        _refuse(request, "move_session", detail, 409, "the agent's working directory can't be read")
+    profile = accounts.find(body.dir, s.harness)
+    if not (profile and profile["signed_in"]):
+        _refuse(request, "move_session", detail, 404, "not a signed-in account")
+    detail = f"session={s.session_id} {detail}"
+    target, argv = Path(profile["dir"]), [*accounts.RESUME[s.harness], s.session_id]
+    if target.samefile(s.root):  # whatever the spelling, link or mount
+        _refuse(request, "move_session", detail, 409, "the session is already on that account")
+    if body.replace and body.resume_existing:
+        _refuse(request, "move_session", detail, 400, "replace or resume, not both")
+    # Before copying anything, and on the PATH the window inherits: its session's own, if
+    # it sets one, else the tmux server's.
+    env = tmux.show_env(pane.session)
+    path = env["PATH"] if "PATH" in env else tmux.server_path()
+    if path is not None and not shutil.which(argv[0], path=path):
+        _refuse(request, "move_session", detail, 400,
+                f"{argv[0]} is not on the tmux session's PATH, so no window could start it")
+    with _MOVES:  # through the launch, so a second request sees the first one's agent
+        if accounts.running(s, target):  # so its copy is neither offered nor touched
+            _refuse(request, "move_session", detail, 409,
+                    "it is running on that account, or may be: go to that window")
+        copied = []
+        try:
+            if not body.resume_existing:
+                copied = accounts.copy_session(s, target, replace=body.replace)
+            elif not accounts.resumable(accounts.confined(accounts.files(s, target), target)):
+                _refuse(request, "move_session", detail, 409,
+                        "that account has no transcript of it to resume")
+        except FileExistsError as e:  # the sheet offers to replace or resume it
+            _refuse(request, "move_session", detail, 409, str(e),
+                    copied=accounts.copied_at(s, target),
+                    resumable=accounts.resumable(accounts.files(s, target)))
+        except (LookupError, ValueError) as e:
+            _refuse(request, "move_session", detail, 409, str(e))
+        except OSError as e:  # only the type: the message can carry a path
+            _audit(request, "move_session", pane_id, detail, outcome=f"error: {type(e).__name__}")
+            raise HTTPException(500, "the session could not be copied: nothing was kept") from e
+        try:  # the copy stays: the session can still be resumed there by hand
+            new = tmux.new_window(pane.session, f"{argv[0]} on {profile['name']}"[:40],
+                                  accounts.command(s.harness, profile["dir"], argv), cwd=cwd)
+        except (subprocess.CalledProcessError, OSError) as e:
+            _audit(request, "move_session", pane_id, detail, outcome="error: copied, no window")
+            raise HTTPException(500, "the session was copied, but its window could not be "
+                                     "opened") from e
+        # A window is not yet an agent: hold the next move until this one shows as running.
+        if not _started(s, target, new):
+            _audit(request, "move_session", new, f"from={pane.id} {detail}",
+                   outcome="error: copied, agent did not start")
+            raise HTTPException(500, "the session was copied, but its agent did not start")
+    _audit(request, "move_session", new, f"from={pane.id} {detail}")
+    return {**_opened(new), "copied": copied}
+
+
+@app.post("/api/panes/{pane_id}/exit")
+def exit_agent(pane_id: str, body: ExpungeBody, request: Request):
+    """Type the agent's own /exit (Claude Code's and Codex's alike) into the pane a move
+    left behind: only while it is the incarnation and runs the session the client names.
+    Never a kill: the agent ends as if the user had typed it."""
+    detail = f"session={body.session_id[:64]}"
+    try:
+        def same():  # again under the pane's send lock: the agent may have exited while it waited
+            _pane_session(pane_id, body.birth, body.session_id)
+        pane, _, _ = _pane_session(pane_id, body.birth, body.session_id)
+        tmux.send_keys(pane.id, "/exit", expected_pid=pane.pid, guard=same)
+    except HTTPException as e:
+        _refuse(request, "exit_agent", detail, e.status_code, e.detail)
+    except tmux.PaneChangedError as e:
+        _refuse(request, "exit_agent", detail, 409, str(e))
+    except (OSError, subprocess.CalledProcessError) as e:
+        _audit(request, "exit_agent", pane_id, detail, outcome=f"error: {type(e).__name__}")
+        raise HTTPException(500, "tmux could not type /exit into the pane") from e
+    _audit(request, "exit_agent", pane.id, detail)
+    return {"ok": True}
 
 
 @app.post("/api/client-error")

@@ -686,7 +686,7 @@ dialog select, dialog input { width: 100%; min-height: 48px; border: 1px solid v
    boxes abut (and X's overhangs the padding, as .search-clear does) so the gaps between
    the visible glyphs come out even and the X's ink lines up with the right gutter. */
 #close-pane { margin: 0 -12px; }
-#kill-pane, #expunge-pane { width: 100%; white-space: nowrap; }
+#kill-pane, #move-pane, #expunge-pane { width: 100%; white-space: nowrap; }
 /* Expunge sits last, under a rule, and is the menu's one red item: killing a window ends a
    process, expunging also deletes the session's files for good. */
 #pane-menu hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
@@ -962,6 +962,7 @@ dialog .acct-check small { display: block; color: var(--muted); font-size: 12px;
 dialog .acct-check.locked { opacity: .6; cursor: default; }
 @media (max-width: 600px) { .acct-pick { grid-template-columns: 1fr; } }
 #acct-dialog { max-width: 560px; overflow-y: auto; }
+#move-dialog { overflow-y: auto; }
 #acct-dialog button:not(.icon-button) { min-height: 36px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
 #acct-dialog button.primary { background: var(--accent); color: var(--bg); border-color: var(--accent); font-weight: 600; }
 #acct-dialog button.ghost { margin-right: auto; border: 0; background: none; color: var(--muted); }

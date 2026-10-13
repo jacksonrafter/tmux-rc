@@ -6,7 +6,7 @@ import { Composer, bindAttach, enterSubmits } from "/m/composer.js";
 import { answerBody, pickCursorRow, STALE } from "/cursor-pick.js";
 import { sendPresence, setupPush, stateUrl } from "/push.js";
 import { paneLinks } from "/pr-links.js";
-import { needsYou, activityLabel, activityClass, isRunning, markWorking, isRecent, matchesFilter, matchesSearch, newestFirst, stillOnPane, paneName, paneActivity, paneHeadline, paneMeta, questionItems, records, itemDone, awaitingLaunch, LAUNCH_GRACE_MS, age, markEnding } from "/m/pane-model.js";
+import { needsYou, activityLabel, activityClass, isRunning, markWorking, isRecent, matchesFilter, matchesSearch, newestFirst, stillOnPane, paneName, paneActivity, paneHeadline, paneMeta, questionItems, records, itemDone, awaitingLaunch, LAUNCH_GRACE_MS, age, since, markEnding } from "/m/pane-model.js";
 import { parseHash, formatHash, historyMode, PAGES } from "/m/url-state.js";
 import { overscroll, overscrollState, RESIST_PX, IDLE_MS } from "/m/overscroll.js";
 import { tmuxKey, inputQueue } from "/m/keys.js";
@@ -23,6 +23,9 @@ const REQUEST_TIMEOUT_MS = 8000;
 // Long polls (/api/state, /live) must outlast the server's 25s hold, or every idle poll
 // would abort just before the server answers.
 const LONG_POLL_TIMEOUT_MS = 35000;
+// No client timeout (setTimeout's largest delay), for a request whose server run an abort
+// would not stop: the answer must be its own outcome, never a failure while it runs on.
+const NO_TIMEOUT = 2 ** 31 - 1;
 // How long "Answer sent" stays (and the option buttons stay disabled) before we trust
 // the pane's own state again — covers the round trip to the agent and back.
 const ANSWER_PENDING_MS = 10000;
@@ -173,6 +176,7 @@ async function request(url, options = {}, timeout = REQUEST_TIMEOUT_MS) {
       const error = new Error(`Request failed (${response.status})`);
       error.status = response.status;
       if (typeof detail === "string" && detail) error.detail = detail;
+      else if (typeof detail?.message === "string") Object.assign(error, detail, { detail: detail.message }); // a refusal with data (the move's older copy)
       throw error;
     }
     return await response.json();
@@ -701,6 +705,7 @@ function render() {
   text($("pane-title"), (pane && paneName(pane)) || (settled ? "Pane unavailable" : "Loading pane"));
   // Expunge is offered only where it can work: a Claude Code or Codex pane (the server refuses the rest anyway).
   for (const id of ["expunge-rule", "expunge-pane"]) show(id, ["claude", "codex"].includes(pane?.tool));
+  show("move-pane", !!pane && accounts.moveTargets(pane.pane_id, pane.tool).length > 0);
   markEnding($("detail"), pane);
   text($("pane-location"), pane ? `${pane.session} / ${pane.window_name || pane.pane_id}` : "Waiting for session state");
   // Which account it runs on, when that needs saying: first on a phone, which ellipsizes the end.
@@ -1187,7 +1192,7 @@ $("secret").oninput = updateComposer;
 enterSubmits($("reply-form"), (target) => $("reply").contains(target));
 bindAttach($("attach"), $("image-file"), () => active && !sending ? draft() : null);
 
-for (const [id, name] of Object.entries({ collapse: "panel", "dash-nav": "dashboard", back: "back", theme: "sun", docs: "book", "close-pane": "x", "pane-menu-button": "ellipsis", "more-button": "menu", sort: "arrowUpDown", "usage-mode": "gauge", "accounts-open": "users", "new-window": "plus", "search-icon": "search", "clear-search": "x", send: "up", attach: "paperclip", keyboard: "keyboard", "close-launch": "x", "close-expunge": "x", "zoom-in": "plus", "zoom-out": "minus", tail: "down" })) icon(id, name);
+for (const [id, name] of Object.entries({ collapse: "panel", "dash-nav": "dashboard", back: "back", theme: "sun", docs: "book", "close-pane": "x", "pane-menu-button": "ellipsis", "more-button": "menu", sort: "arrowUpDown", "usage-mode": "gauge", "accounts-open": "users", "new-window": "plus", "search-icon": "search", "clear-search": "x", send: "up", attach: "paperclip", keyboard: "keyboard", "close-launch": "x", "close-expunge": "x", "close-move": "x", "zoom-in": "plus", "zoom-out": "minus", tail: "down" })) icon(id, name);
 for (const [id, label, glyph] of [["all", "All", "layers"], ["running", "Running", "terminal"], ["recent", "Recent", "clock"], ["attention", "Needs you", "alert"]]) {
   html($(`${id}-tab`), `<span class="nav-icon">${licon(glyph)}<span id="${id}-count" class="count">0</span></span><span>${label}</span>`);
 }
@@ -1606,9 +1611,7 @@ $("expunge-pane").onclick = async () => {
   $("expunge-confirm").onclick = async () => {
     $("expunge-dialog").close();
     try {
-      // No client timeout (setTimeout's largest delay): aborting would not stop the server's
-      // run, so the answer must be its own outcome, never a failure while it deletes on.
-      const done = await endPane(pane, "expunge", "Expunging…", { session_id: plan.session_id, birth }, 2 ** 31 - 1);
+      const done = await endPane(pane, "expunge", "Expunging…", { session_id: plan.session_id, birth }, NO_TIMEOUT);
       notice(`Expunged: ${items(done.files.length)} and ${done.lines} history line${done.lines === 1 ? "" : "s"} deleted.`, 6000);
     } catch (error) { // a refusal (pane gone, 404; or 409) touched nothing and clears; a failure stays
       const refused = [404, 409].includes(error.status);
@@ -1618,6 +1621,67 @@ $("expunge-pane").onclick = async () => {
     }
   };
   $("expunge-dialog").showModal();
+};
+// Move to another account: copy the pane's agent session into another account's dir and
+// resume it there in a new window; this pane and the original are left alone
+// (docs/design/agent-accounts.md).
+html($("move-pane"), `${licon("users", 18)}<span>Move to another account…</span>`);
+// Not while a choice runs: the sheet is where its outcome shows.
+$("close-move").onclick = () => $("move-choices").inert || $("move-dialog").close();
+$("move-dialog").addEventListener("cancel", (e) => { if ($("move-choices").inert) e.preventDefault(); });
+$("move-pane").onclick = async () => {
+  closePaneMenu();
+  const pane = panes.find((p) => p.pane_id === active);
+  if (!pane) return;
+  // Which account each pane runs on, fresh: a stale list offers the pane its own.
+  if (!await accounts.refresh()) return notice("Could not load the accounts.", 6000);
+  const targets = accounts.moveTargets(pane.pane_id, pane.tool);
+  if (!targets.length) return notice("No other signed-in account to move it to.", 6000);
+  // The session it runs now, which every request below is bound to (Expunge's preview names it).
+  let session_id;
+  try { ({ session_id } = await request(`${paneUrl(pane.pane_id, "expunge")}?birth=${encodeURIComponent(pane.birth ?? "")}`)); }
+  catch (error) { return notice(error.detail || "Could not find this pane's session.", 6000); }
+  const sheet = (what, choices) => {
+    text($("move-what"), what);
+    $("move-choices").replaceChildren(...choices.map(([label, sub, act]) => {
+      const button = document.createElement("button");
+      html(button, `<span><strong>${label}</strong><small></small></span>${licon("chevron")}`);
+      text(button.querySelector("small"), sub);
+      button.onclick = async () => { // one choice at a time: a second tap waits out the first
+        if ($("move-choices").inert) return;
+        $("move-choices").inert = true;
+        try { await act(); } finally { // and the tapped choice is gone: focus stays in the sheet
+          $("move-choices").inert = false;
+          $("move-choices").firstElementChild?.focus();
+        }
+      };
+      return button;
+    }));
+  };
+  const go = (id) => { $("move-dialog").close(); openLaunched(id); };
+  // No status means no answer at all: the server may have done it, so never just "could not".
+  const failed = (what, maybe, error) => notice(error.status === undefined ? `Connection lost; ${maybe}` : `Could not ${what}: ${error.detail || error.message}`, 6000);
+  const move = async (p, flags = {}) => {
+    try {
+      const r = await post(paneUrl(pane.pane_id, "move"), { dir: p.dir, birth: pane.birth, session_id, ...flags }, NO_TIMEOUT);
+      sheet(`It is running on ${p.name} in a new window. This window still runs it on this account until it exits.`, [
+        ["Go to the new window", "", () => go(r.pane_id)],
+        ["Exit the old pane", "Types /exit here, then goes to the new window", async () => {
+          try { await post(paneUrl(pane.pane_id, "exit"), { birth: pane.birth, session_id }); }
+          catch (error) { failed("exit the old pane", "the old pane may have exited.", error); }
+          go(r.pane_id);
+        }]]);
+    } catch (error) {
+      if (error.copied) return sheet(`An older copy exists on ${p.name} (copied ${since({ state_since: error.copied })} ago).`, [
+        ["Replace it", "Copies this session over that one's files, then resumes it", () => move(p, { replace: true })],
+        ...error.resumable ? [["Resume that copy", "Opens it as it is", () => move(p, { resume_existing: true })]] : []]);
+      $("move-dialog").close();
+      failed("move the session", "the move may have completed. Look for its new window before trying again.", error);
+    }
+  };
+  sheet(`Copies this ${pane.tool === "codex" ? "Codex" : "Claude Code"} session to the account you pick and resumes it there, in a new window in ${pane.session}. It is a copy, never a move: the original stays readable on this account, and this window keeps running until you exit it. An account that has never opened this folder asks you to trust it first.`,
+    targets.map((p) => [accounts.chip(p), p.tilde, () => move(p)]));
+  $("move-dialog").showModal();
 };
 window.addEventListener("hashchange", route);
 // A push tapped while the app is open: sw.js names the address to show, and it is routed

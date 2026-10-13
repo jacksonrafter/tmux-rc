@@ -137,6 +137,73 @@ Remove takes the account off tmux-rc's list; the dir, its login and its transcri
 on disk and running panes keep running. The default `~/.claude` and `~/.codex` cannot be
 removed.
 
+## Moving a session to another account
+
+A plan runs out mid-task, or work started on the wrong account. Pane "…" → **Move to
+another account…** (shown only when the pane's provider has two or more signed-in
+accounts) lists the provider's other accounts. Picking one copies the session into that
+account's dir and opens a new window in the same tmux session and cwd running
+`CLAUDE_CONFIG_DIR=<dir> claude --resume <id>` (`codex resume <id>` under `CODEX_HOME`).
+
+It is a copy, never a move. The source pane keeps running and is never killed, and the
+original transcript stays readable on the old account; the user exits the old pane when
+they choose. Moving files out from under a running agent would break it, and a copy
+that turns out wrong costs nothing to delete, while a lost transcript cannot come back.
+From then on the two diverge under one session id, each in its own dir, which is the
+same thing as resuming one session twice and confuses nothing that looks a session up
+by its dir.
+
+What is copied is decided by testing what `--resume` needs, not by copying the whole
+session's footprint. The transcript alone is enough: a second, logged-in account given
+only the `.jsonl` answered from the conversation's context, with nothing tying the session
+to the account that started it. The `<id>/` folder (subagent transcripts, externalised
+tool results) and `file-history/<id>/` (the /rewind snapshots) come along so the resumed
+session is whole. Session env, tasks, todos and the process registry are rebuilt on start
+and are left behind. Codex needs only its rollout files, a resumed thread's later
+segments included; its sqlite index finds an unindexed rollout by scanning. The list is a
+subset of Expunge's per-session table, so one table says where a session's files are. The
+source keeps running while it is copied, so a record it was still appending is cut from
+the end of each copied log: the agent only appends, so the rest is whole, and a resume
+reads whole lines. Stopping the source first was rejected, since the move exists for an
+agent the user is still in the middle of.
+
+An older copy of the session already on the target (an earlier move, or one made by
+hand) is never overwritten silently. The API refuses with 409 and the copy's age, and the
+sheet asks: **Replace it** deletes that session id's transcript, `<id>/` folder and
+file-history there, and nothing else, then copies afresh; **Resume that copy** opens it
+as it is. Either is an explicit flag on the request, so a client that does not know about
+the choice still gets the refusal. Replacing gives up the older copy before the new one
+lands, which is acceptable because the original it came from is still on the source
+account. Resume needs that copy's transcript, not just any of its files. No move at all,
+and so neither choice, is offered for a copy that an agent is running on the target right
+now: Claude's registration of it there (one that can't be read counts, since it could be
+this session), a process holding one of its files open (Codex's
+app-server keeps the rollout open), or, in the moment before either exists, the session
+id on a command line, as a move's resume has: replacing
+files under a live agent strands its later writes, and resuming it twice puts two agents
+on one transcript. Moves run one at a time, through the new window's launch until its agent shows as
+running, so two
+requests cannot pass these checks together, and the sheet takes one tap at a time. A copy
+that fails partway is removed. Nothing is written or deleted through a folder
+in the target that links out of it, a session whose own files include a link is refused, and the agent's command is checked to exist before
+anything is copied, so a resume that cannot start leaves no stray copy. The pane's own
+account is refused too, compared by identity so no spelling, link or bind mount slips by, and the sheet reloads the accounts
+before listing them, since a window the move itself just opened may not have been
+attributed to its account yet.
+
+Once the new window runs, the sheet offers **Exit the old pane**: it types the agent's own
+`/exit` into the source pane, bound to its incarnation and the session id, and is refused
+if either changed. It is a button, not automatic, and never a kill, so an agent mid-turn
+is not cut off without the user deciding to.
+
+A session with no transcript yet (registered, nothing written)
+is refused rather than opened as an empty resume, and so are two dirs where one sits
+inside the other, which would make the copy chase its own output. A dir that has never opened the folder shows the
+provider's own "trust this folder" prompt in the new window first. Answering it is left to
+the user rather than copied over from the old account, because it is a security decision
+the provider asks per account. Like Expunge, the request is bound to the pane incarnation
+the menu was drawn for, and it is audited with the session id and the target dir.
+
 ## Safety
 
 - No credentials file is ever shared, copied or linked, and discovering, naming or adding
@@ -154,4 +221,4 @@ removed.
 - Linking whole dirs between accounts: rejected, it silently shares the login.
 - A login form or token paste in tmux-rc: rejected, it moves the credential boundary into tmux-rc.
 - Per-account rows in the strip: rejected, several accounts push the list off a phone.
-- Copying a transcript to move a session between accounts: deferred, it forks the session and moves work content across accounts.
+- Moving (not copying) a session between accounts: rejected, see "Moving a session" above.

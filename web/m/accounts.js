@@ -30,16 +30,18 @@ export function setupAccounts({ request, post, licon, notice, repaint, sessions,
     return p?.signed_in ? p : null;
   };
 
-  let asked = 0; // only the newest answer counts: an older one landing late would undo a change
-  async function refresh() {
-    const mine = ++asked;
-    try {
-      const data = await request("/api/accounts");
-      if (mine !== asked) return;
-      ({ profiles, sessions: defaults, shared } = data);
-    } catch { return; }
+  // Only the newest answer counts: an older one landing late would undo a change. A caller
+  // whose request was overtaken gets the newer one's outcome: true once the data is fresh.
+  let asked = 0, newest;
+  const refresh = () => newest = load(++asked);
+  async function load(mine) {
+    const data = await request("/api/accounts").catch(() => null);
+    if (mine !== asked) return newest; // whether this one failed or not
+    if (!data) return false;
+    ({ profiles, sessions: defaults, shared } = data);
     paintMenu(); repaint();
     if (dlg.open && F.step === "list" && !F.renaming) render();
+    return true;
   }
   function setFilter(dir) {
     filter = dir || null;
@@ -303,7 +305,9 @@ export function setupAccounts({ request, post, licon, notice, repaint, sessions,
     sessionBadge: (session) => Object.keys(ENV).filter((pr) => several(pr) && set(session, pr) && defaults[session][pr] !== defaults[""]?.[pr]).map((pr) => defaultOf(session, pr)).filter(Boolean).map((p) => badge(p)).join(""),
     // The consent card: which account a chat action lands on.
     consent: (paneId) => { const p = ofPane(paneId); return p ? `<small class="voice-meta acct-on">on ${badge(p)} ${esc(p.tilde)}. Sending never changes a pane's account.</small>` : ""; },
-    // For the fast-follow "Move pane to another account": the profile by config dir.
-    profile: byDir, list: () => profiles,
+    profile: byDir, list: () => profiles, chip: (p) => badge(p),
+    // Where "Move to another account" can take a pane: its provider's other signed-in
+    // accounts, once it has several.
+    moveTargets: (paneId, provider) => several(provider) ? signedIn().filter((p) => p.provider === provider && !p.panes.includes(paneId)) : [],
   };
 }

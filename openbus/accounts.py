@@ -11,11 +11,13 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import shutil
 import subprocess
 import threading
 from pathlib import Path
 
 from . import plan_usage, tmux
+from .expunge import _FILES, Refused, Session, _home, _registration, _stat
 from .plan_usage import ENV
 from .plan_usage import canonical as _canonical
 
@@ -28,6 +30,11 @@ SHARED = {"claude": {"CLAUDE.md": True, "skills": True, "hooks": True, "statusli
                      "settings.json": False},
           "codex": {"AGENTS.md": True, "prompts": True, "config.toml": False}}
 LOGIN = {"claude": ["claude"], "codex": ["codex", "login"]}  # the provider's own sign-in
+RESUME = {"claude": ["claude", "--resume"], "codex": ["codex", "resume"]}
+# What a session needs to resume on another account: of the files Expunge knows it by,
+# Claude's transcript, its subagents' and tool results' folder and its /rewind snapshots;
+# Codex's rollouts. The rest is per process or rebuilt when the agent starts.
+MOVED = {"claude": _FILES["claude"][:3], "codex": _FILES["codex"][:4]}
 MORE = {"claude": ".claude-*", "codex": ".codex?*"}  # each provider's other config dirs in HOME
 # One store transaction at a time: the PlanUsage thread and the API's worker threads all
 # read-modify-write it. Re-entrant, since add() and edit() look profiles up inside theirs.
@@ -254,3 +261,136 @@ def set_default(session: str, profile: dict) -> None:
     every window created there afterwards (prefix c included) starts on it."""
     tmux.set_env(ENV[profile["provider"]], None if profile["default"] else profile["dir"],
                  session=session)
+
+
+def files(s: Session, root: Path) -> list[Path]:
+    """The session's files (MOVED) under one account's dir."""
+    return [p for g in MOVED[s.harness] for p in root.glob(g.format(id=s.session_id))]
+
+
+def _tree(paths: list[Path]):
+    """Each path and everything under it."""
+    for p in paths:
+        yield p
+        yield from p.rglob("*")
+
+
+def _has_record(log: Path) -> bool:
+    """Whether the log holds one whole line yet, read a chunk at a time until it does."""
+    with log.open("rb") as f:
+        return any(b"\n" in chunk for chunk in iter(lambda: f.read(1 << 16), b""))
+
+
+def resumable(paths: list[Path]) -> bool:
+    """Whether a session's files (from files()) include its transcript with at least one
+    whole record in it, which a resume needs."""
+    return any(p.suffix == ".jsonl" and p.is_file() and _has_record(p) for p in paths)
+
+
+def confined(paths: list[Path], target: Path) -> list[Path]:
+    """`paths`, refused if any, or anything under one, resolves out of the account's dir: a
+    symlinked projects/ (say) would carry a write, a delete or a resume to another
+    account's files."""
+    dst = target.resolve()
+    if any(not p.resolve().is_relative_to(dst) for p in _tree(paths)):
+        raise ValueError("a path in that account's dir links outside it")
+    return paths
+
+
+def copied_at(s: Session, target: Path) -> float | None:
+    """When the account's copy of the session was made (its files' latest ctime: a copy
+    keeps the original's mtime), or None if it has none."""
+    return max((p.lstat().st_ctime for p in files(s, target)), default=None)
+
+
+def running(s: Session, target: Path, pids: list[str] | None = None) -> bool:
+    """Whether an agent other than `s` runs this session on `target`, or may: by any of three
+    signs: Claude's registration of it there (a live pid with the start time it recorded,
+    or a registration that can't be read, which could be it); a
+    process holding one of its files there open (Codex's app-server keeps the rollout open);
+    or, before either exists, the session id on a command line, as a move's resume has.
+    `pids`: look only at these processes (a move's own window), not every one."""
+    for path in target.glob("sessions/*.json"):
+        try:
+            reg = _registration(path)
+        except Refused:
+            return True
+        if (reg.get("sessionId") == s.session_id and reg["pid"] != s.pid
+                and _stat(reg["pid"])[19:20] == [reg["procStart"]]):
+            return True
+    dst, held = target.resolve(), {str(p.resolve()) for p in _tree(files(s, target))}
+    for pid in filter(str.isdigit, os.listdir("/proc") if pids is None else pids):
+        if int(pid) == s.pid:
+            continue
+        if s.session_id in tmux.proc_read(pid, "cmdline").split("\0"):
+            with contextlib.suppress(Refused):
+                if _home(int(pid), ENV[s.harness], f".{s.harness}").resolve() == dst:
+                    return True
+        with contextlib.suppress(OSError):
+            fds = Path(f"/proc/{pid}/fd")
+            if any(os.readlink(fds / fd) in held for fd in os.listdir(fds)):
+                return True
+    return False
+
+
+def _whole_records(log: Path) -> None:
+    """Cut a record the running agent was still appending when the log was copied, so the
+    copy ends on a whole JSON line. The agent appends, so everything before it is whole.
+    Read backwards a chunk at a time: a Codex rollout can run to hundreds of MB."""
+    with log.open("r+b") as f:
+        pos = f.seek(0, os.SEEK_END)
+        cut = 0
+        while pos:
+            n = min(pos, 1 << 16)
+            pos -= n
+            f.seek(pos)
+            if (i := f.read(n).rfind(b"\n")) >= 0:
+                cut = pos + i + 1
+                break
+        f.truncate(cut)
+
+
+def copy_session(s: Session, target: Path, *, replace: bool = False) -> list[str]:
+    """Copy the session's files into another account's dir, at the same relative paths, so
+    the agent there resumes it; the original stays. Refuses, copying nothing, when there
+    is no transcript yet, when either dir holds the other or a folder on the way links out
+    of the target, or when the target already has the session, unless `replace`: then that
+    session's files there, and nothing else, are deleted first. Undoes a copy that fails
+    partway. The caller runs one at a time (server._MOVES), so two moves can never both
+    pass the check and then overwrite, or roll back, each other's copy."""
+    src, dst = s.root.resolve(), target.resolve()
+    if src.is_relative_to(dst) or dst.is_relative_to(src) or src.samefile(dst):  # a bind mount
+        raise ValueError("one account's dir is inside the other's")
+    paths, old = files(s, s.root), files(s, target)
+    if not resumable(paths):  # a session only registered so far
+        raise LookupError("this session has no transcript to resume yet")
+    confined([*old, *(target / p.relative_to(s.root) for p in paths)], target)
+    if any(p.is_symlink() for p in _tree(paths)):
+        raise ValueError("the session's files include a link, which could lead out of the account")
+    if old and not replace:
+        raise FileExistsError("that account already has this session")
+    for p in old:
+        if p.is_dir() and not p.is_symlink():
+            shutil.rmtree(p)
+        else:
+            p.unlink()
+    made: list[Path] = []
+    try:
+        for src in paths:
+            dst = target / src.relative_to(s.root)
+            dst.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            made.append(dst)
+            if src.is_dir():
+                shutil.copytree(src, dst, symlinks=True)
+            else:
+                shutil.copy2(src, dst)
+            for log in [dst] if dst.suffix == ".jsonl" else dst.rglob("*.jsonl"):
+                _whole_records(log)
+    except OSError:
+        for dst in made:
+            if dst.is_dir():
+                shutil.rmtree(dst)
+            else:
+                dst.unlink(missing_ok=True)
+        raise
+    return [p.name for p in paths]

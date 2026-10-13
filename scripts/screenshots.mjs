@@ -75,6 +75,9 @@ const TWO_ACCOUNTS = [
   ["accounts-mobile-filtered", PHONE, "dark", "", two(async (page) => { await page.click("#more-button"); await page.click('#acct-filter [data-dir="~/.claude-personal"]'); })],
   ["accounts-mobile-dashboard", PHONE, "light", "#view=dashboard", two((page) => page.locator("#usage-panel").scrollIntoViewIfNeeded())],
   ["accounts-mobile-pane", PHONE, "light", "#pane=%2513", two()],
+  ["accounts-mobile-pane-menu", PHONE, "dark", "#pane=%2513", moveMenu()],
+  ["accounts-mobile-move", PHONE, "light", "#pane=%2513", moveMenu("#move-pane"), "#move-dialog"],
+  ["accounts-mobile-moved", PHONE, "light", "#pane=%2513", moveMenu("#move-pane", "Exit the old pane"), "#move-dialog"],
   ["accounts-mobile-new-window", PHONE, "light", "", two(async (page) => { await page.click("#new-window"); await page.waitForSelector(".acct-pick"); })],
   ["accounts-mobile-consent", PHONE, "light", "", two(chat("Tell e2e triage to rerun it headed", "#voice-log .propose .acct-badge"))],
   ["accounts-mobile-accounts", PHONE, "dark", "", two(async (page) => { await page.click("#more-button"); await page.click("#accounts-open"); })],
@@ -112,6 +115,19 @@ function addFlow(until) {
     await page.waitForSelector("#acct-make-default", { timeout: 20000 });
   };
 }
+// The pane's "…" menu once the pane's account has loaded (the list's badges are hidden
+// behind the pane on a phone, so two() can't wait on those), then `item` in it. A base
+// from before accounts, or before the item, is shot as it is.
+function moveMenu(item, done) {
+  return async (page) => {
+    if (!await page.locator('link[href="/m/accounts.js"]').count() || (item && !await page.locator(item).count())) return;
+    await page.locator("#pane-location .acct-badge").waitFor();
+    await page.click("#pane-menu-button");
+    if (item) { await page.click(item); await page.waitForSelector("#move-dialog[open]"); }
+    if (done) { await page.click("#move-choices button"); await page.getByText(done).waitFor(); } // the demo's move succeeds
+  };
+}
+
 // Once the accounts have arrived (after the panes), the step. A base from before accounts
 // (no accounts.js preload) is shot as it is; on any other, a missing badge fails the shot.
 function two(step) {
