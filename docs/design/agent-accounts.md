@@ -83,11 +83,21 @@ the wide layout had no menu before.
   save a row, read as loose labels rather than headings, so they now take a row. The chip
   names the account once over its meters, so the meters carry none. A phone's dashboard
   uses the strip, a chip on each meter.
-- **Filter** in ☰ (All, then each account), because it is a mode you set and forget, not a
-  control every screen needs. While on, a "Filtered: Work ✕" pill shows under the header
-  (in the sidebar on wide) and ☰ carries a dot. It applies to the list, the strip and the
-  dashboard, Open loops included: a loop shows only if a pane on the account holds it, so a
-  PR or worktree with no pane, which no account owns, is hidden while filtered.
+- **Filter** is a list filter, so it sits with the list's other one rather than in ☰ among
+  settings: on wide, a "Panes from" group (All accounts, then each account) under "Show" in
+  the list's All ∨ dropdown, combining with it (Running + Work is Work's running panes),
+  its dot on the dropdown's label; a phone has no dropdown (its tab bar is the state
+  filter), so a row of chips under search. While on, a "Filtered: Work ✕" pill shows under
+  search on wide, and under a phone's header on the views without the chips (the
+  dashboard). It applies to the list, the strip and the dashboard, Open loops included:
+  a loop shows only if a pane on the account holds it, so a PR or worktree with no pane,
+  which no account owns, is hidden while filtered.
+  It lives in the URL beside the state filter (`#filter=running&acct=claude-work`, the
+  account's dir less its usual `~/.`: unique, unchanged by a rename, and readable), not in localStorage: reload, a shared link and
+  Back/Forward restore it, one source of truth for both filters. Picking replaces the
+  history entry, as the state filter does, so Back leaves the screen instead of replaying
+  taps. A bare URL (the installed app's launch) starts unfiltered, as the state filter
+  always has: a filter remembered silently across launches would hide panes that need you.
 - **Consent card:** a chat action on a pane names the account the pane runs on, and says
   that sending never changes it.
 
