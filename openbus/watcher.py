@@ -49,6 +49,9 @@ SNAPSHOT_HISTORY = 200
 # Restart checkpoints (docs/design/activity-clock-persistence.md): the tail of the
 # activity log stored with each card.
 CHECKPOINT_EVENTS = 100
+# A dead tmux server's checkpoints are the only record of what it ran (after a reboot,
+# say). Keep them all until the server's newest activity is this old.
+DEAD_SERVER_RETENTION = 30 * 86400
 # Bump when classification or the fingerprint changes meaning: stored cards then miss
 # their hash once and every pane is re-read, instead of restoring an older parser's card.
 CARD_VERSION = 15
@@ -1169,17 +1172,25 @@ class Watcher:
         return span
 
     def _load_checkpoints(self, server: str, panes) -> None:
-        """Read every checkpoint once, at startup. Given the FULL listing (not a
-        TMUXRC_TARGET watch list), also prune: this server's preloaded rows whose pane
-        is gone, and rows of other tmux servers that are provably gone. Any
-        failure leaves the preload empty, which is today's seed-from-tmux behavior."""
+        """Read every checkpoint once, at startup, keeping this server's rows: no other
+        server's pane can be restored. Given the FULL listing (not a TMUXRC_TARGET watch
+        list), also prune: this server's preloaded rows whose pane is gone, and every row
+        of another tmux server that is provably gone and whose newest activity is older
+        than DEAD_SERVER_RETENTION. Any failure leaves the preload empty, which is
+        today's seed-from-tmux behavior."""
         self._checkpoints = {}
         try:
-            self._checkpoints = self.history.load_checkpoints()
+            rows = self.history.load_checkpoints()
+            self._checkpoints = {u: r for u, r in rows.items() if r["server"] == server}
             if panes is not None:
                 alive = {pane_key(server, p.id, p.pid) for p in panes}
-                gone = [u for u, r in self._checkpoints.items() if u not in alive and (
-                    r["server"] == server or not _server_alive(r["server"], server))]
+                newest: dict[str, float] = {}
+                for r in rows.values():
+                    newest[r["server"]] = max(newest.get(r["server"], 0.0), r["last_activity_at"])
+                expired = time.time() - DEAD_SERVER_RETENTION
+                gone = [u for u, r in rows.items() if u not in alive and (
+                    r["server"] == server or (newest[r["server"]] < expired
+                                              and not _server_alive(r["server"], server)))]
                 self.history.delete_checkpoints(gone)
         except Exception:
             logger.warning("pane checkpoints unavailable; seeding clocks from tmux",
