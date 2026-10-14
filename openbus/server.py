@@ -1394,12 +1394,13 @@ def _kill_window(request: Request, pane_id: str, action: str, detail: str = "",
 
 
 @app.post("/api/panes/{pane_id}/close")
-def close_window(pane_id: str, request: Request):
+def close_window(pane_id: str, request: Request, birth: str | None = None):
     """Close the WINDOW that contains this pane — the phone's "I'm done with this" control.
     Destructive: any process in the window is killed. Its panes leave the published deck at
     once, so the client's next poll no longer has it; the watcher's next tick then evicts it
-    (emitting pane_removed), the same path as a window closed on the host."""
-    killed = _kill_window(request, pane_id, "kill_window")
+    (emitting pane_removed), the same path as a window closed on the host. `birth`, the
+    incarnation the client's menu or sheet describes, refuses a newer pane under its %N."""
+    killed = _kill_window(request, pane_id, "kill_window", pid=birth or None)
     _audit(request, "kill_window", pane_id)
     return {"ok": True, "killed": killed}
 
@@ -1427,8 +1428,14 @@ def _pane_session(pane_id: str, birth: str, expected: str | None = None):
 
 @app.get("/api/panes/{pane_id}/expunge")
 def expunge_preview(pane_id: str, birth: str):
-    """What Expunge would delete, for the confirmation to name."""
-    _, s, (own, shared) = _pane_session(pane_id, birth)
+    """What Expunge would delete, for the confirmation to name, or {"nothing": true} when
+    the pane has no saved conversation (a sign-in window), which the client offers to close."""
+    try:
+        _, s, (own, shared) = _pane_session(pane_id, birth)
+    except HTTPException as e:
+        if isinstance(e.__cause__, expunge.Empty):
+            return {"nothing": True}
+        raise
     return {"harness": s.harness, "session_id": s.session_id,
             "files": [p.name for p in own], "shared": [p.name for p in shared]}
 

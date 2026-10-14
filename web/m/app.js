@@ -1849,30 +1849,39 @@ const closePaneMenu = () => { $("pane-menu").open = false; $("pane-menu-button")
 // The Layout picker's trigger: one fixed layout glyph (a grid, as Meet's "Adjust view"); its value says which layout is on.
 $("review-layout-picker").querySelector("summary").insertAdjacentHTML("afterbegin", licon("dashboard", 18));
 html($("kill-pane"), `${licon("power", 18)}<span>Kill window</span>`);
-$("kill-pane").onclick = async () => {
-  closePaneMenu();
-  if (!active || !confirm("Kill this tmux window? Whatever is running in it will end.")) return;
-  try { await endPane(active, "close", "Closing…"); } catch (error) { if (error.status !== 404) notice(`Could not kill this window: ${error.detail || error.message}`, 6000); }
-};
+// `birth` is the incarnation the menu or sheet was drawn for: a newer pane under its %N is refused.
+async function killWindow(pane, birth) {
+  if (!pane || !confirm("Kill this tmux window? Whatever is running in it will end.")) return;
+  try { await endPane(pane, `close?birth=${encodeURIComponent(birth ?? "")}`, "Closing…"); } catch (error) { if (error.status !== 404) notice(`Could not kill this window: ${error.detail || error.message}`, 6000); }
+}
+$("kill-pane").onclick = () => { closePaneMenu(); killWindow(active, panes.find((p) => p.pane_id === active)?.birth); };
 // Expunge: kill the window AND delete its agent session's local files (docs/design/expunge.md).
 // The server names what it would delete first, and the confirmation is bound to that session id.
 html($("expunge-pane"), `${licon("trash", 18)}<span>Expunge</span>`);
 // A reload mid-request would hide the outcome of a kill or deletion still running.
 const busy = () => sending || launching || [...ending.values()].some((e) => !e.done);
 const items = (n) => `${n} local file${n === 1 ? " or folder" : "s or folders"}`;
-html($("expunge-confirm"), `${licon("trash", 18)}<span>Expunge permanently</span>`);
-$("close-expunge").onclick = () => $("expunge-dialog").close();
+$("close-expunge").onclick = $("expunge-cancel").onclick = () => $("expunge-dialog").close();
+// The sheet says what Expunge would delete, why it can't, or (a window with no saved
+// conversation, like a sign-in) offers to close the window instead. `act` is its one action.
+const expungeSheet = (what, act, kill) => {
+  text($("expunge-what"), what);
+  $("expunge-caveat").hidden = !act || kill;
+  $("expunge-confirm").hidden = !act;
+  html($("expunge-confirm"), kill ? `${licon("power", 18)}<span>Kill window</span>` : `${licon("trash", 18)}<span>Expunge permanently</span>`);
+  $("expunge-confirm").onclick = () => { $("expunge-dialog").close(); act(); };
+  $("expunge-dialog").showModal();
+};
 $("expunge-pane").onclick = async () => {
   closePaneMenu();
   const pane = active, title = $("pane-title").textContent;
   const birth = panes.find((p) => p.pane_id === pane)?.birth; // the incarnation this menu is for
   if (!pane) return;
   let plan;
-  try { plan = await request(`${paneUrl(pane, "expunge")}?birth=${encodeURIComponent(birth ?? "")}`); } catch (error) { return notice(error.detail || "Could not find this pane's session.", 6000); }
+  try { plan = await request(`${paneUrl(pane, "expunge")}?birth=${encodeURIComponent(birth ?? "")}`); } catch (error) { return expungeSheet(error.detail || "Could not find this pane's session."); }
+  if (plan.nothing) return expungeSheet("This window has no saved conversation to expunge. Close the window instead?", () => killWindow(pane, birth), true);
   const harness = plan.harness === "codex" ? "Codex" : "Claude Code", n = plan.files.length;
-  text($("expunge-what"), `This kills the tmux window of “${title}”, ending everything running in it, and permanently deletes its ${harness} session ${plan.session_id.slice(0, 8)}: ${items(n)}${plan.shared.length ? `, plus its entries in ${plan.shared.join(", ")}` : ""}.${plan.harness === "codex" ? " Codex's own databases keep their copy of the thread." : ""}`);
-  $("expunge-confirm").onclick = async () => {
-    $("expunge-dialog").close();
+  expungeSheet(`This kills the tmux window of “${title}”, ending everything running in it, and permanently deletes its ${harness} session ${plan.session_id.slice(0, 8)}: ${items(n)}${plan.shared.length ? `, plus its entries in ${plan.shared.join(", ")}` : ""}.${plan.harness === "codex" ? " Codex's own databases keep their copy of the thread." : ""}`, async () => {
     try {
       const done = await endPane(pane, "expunge", "Expunging…", { session_id: plan.session_id, birth }, NO_TIMEOUT);
       notice(`Expunged: ${items(done.files.length)} and ${done.lines} history line${done.lines === 1 ? "" : "s"} deleted.`, 6000);
@@ -1882,8 +1891,7 @@ $("expunge-pane").onclick = async () => {
       if (error.status === undefined) notice("Connection lost; the expunge may have completed. Check that the session no longer resumes.");
       else notice(`Expunge ${refused ? "refused" : "failed"}: ${error.detail || error.message}`, refused ? 6000 : 0);
     }
-  };
-  $("expunge-dialog").showModal();
+  });
 };
 // Move to another account: copy the pane's agent session into another account's dir and
 // resume it there in a new window; this pane and the original are left alone
@@ -1904,6 +1912,7 @@ $("move-pane").onclick = async () => {
   let session_id;
   try { ({ session_id } = await request(`${paneUrl(pane.pane_id, "expunge")}?birth=${encodeURIComponent(pane.birth ?? "")}`)); }
   catch (error) { return notice(error.detail || "Could not find this pane's session.", 6000); }
+  if (!session_id) return notice("This window has no saved conversation to move.", 6000);
   const sheet = (what, choices) => {
     text($("move-what"), what);
     $("move-choices").replaceChildren(...choices.map(([label, sub, act]) => {
