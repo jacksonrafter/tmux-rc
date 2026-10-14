@@ -12,6 +12,7 @@ import { overscroll, overscrollState, RESIST_PX, IDLE_MS } from "/m/overscroll.j
 import { tmuxKey, inputQueue } from "/m/keys.js";
 import { setupSidebar } from "/m/sidebar.js";
 import { renderUsage, shownUsage } from "/m/usage.js";
+import { renderUsageView, usageDays } from "/m/usage-view.js";
 import { setupAccounts } from "/m/accounts.js";
 import { renderLoops, renderLoopsCard } from "/m/loops.js";
 
@@ -79,6 +80,7 @@ const LUCIDE = {
   gauge: '<path d="m12 14 4-4M3.34 19a10 10 0 1 1 17.32 0"/>',
   arrowUpDown: '<path d="m21 16-4 4-4-4M17 20V4M3 8l4-4 4 4M7 4v16"/>',
   users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>',
+  filter: '<path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z"/>',
   bot: '<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2M20 14h2M15 13v2M9 13v2"/>',
 };
 const licon = (name, size = 20) => `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${LUCIDE[name]}</svg>`;
@@ -622,7 +624,7 @@ const refreshHistory = (force) => refreshAtlasHistory(request, () => { if (dashb
 // by default). The wide sidebar keeps them all unless the same setting is Off, which its ☰
 // menu toggles as "Plan usage": someone paying per token has no plan limits to watch.
 const USAGE_MODES = { auto: "Auto", on: "On", off: "Off" };
-let usage = [], loops = null, cachedAt = 0, usageMode = "auto", usagePast = false, cachedSeq = 0;
+let usage = [], loops = null, cachedAt = 0, usageMode = "auto", usagePast = 0, cachedSeq = 0;
 try { const saved = localStorage.getItem("tmuxrc-usage"); if (Object.hasOwn(USAGE_MODES, saved)) usageMode = saved; } catch {}
 const paintUsage = () => {
   $("usage-mode").ariaLabel = WIDE.matches ? `Plan usage: ${usageMode === "off" ? "Off" : "On"}` : `Usage: ${USAGE_MODES[usageMode]}`;
@@ -632,32 +634,30 @@ const paintUsage = () => {
   accounts.strip($("usage"), several);
   $("usage-handle").hidden = $("usage").hidden;
   // The dashboard's card draws every meter as a trend whatever the mode; its view (#view=usage)
-  // adds the clock times and the forecast. The dashboard's tool chips filter both, and a
+  // draws them over time (usage-view.js). The dashboard's tool chips filter both, and a
   // tool with no plan meters hides the card. Several accounts: a labelled group each when
   // wide, the strip on a phone.
   const tool = $("session-atlas")._scope?.tool, board = tool ? all.filter((a) => a.provider === tool) : all;
-  // A labelled group per account, or else one grid of meters (`flat`).
-  const paint = (el, list, grouped, cls, options, flat = () => renderUsage(el, list, options)) => {
-    const mode = grouped ? "groups" : "board";
-    if (el._mode !== mode) { el._mode = mode; el._html = el._groups = null; el.className = cls; }
-    if (grouped) accounts.groups(el, list, (cells, one) => renderUsage(cells, one, options));
-    else flat();
-  };
   show("usage-panel", board.length > 0);
-  const el = $("usage-board");
-  paint(el, board, several && WIDE.matches, "usage-board", { wide: true }, () => renderUsage(el, order(board), { wide: true }));
+  const el = $("usage-board"), grouped = several && WIDE.matches, mode = grouped ? "groups" : "board";
+  if (el._mode !== mode) { el._mode = mode; el._html = el._groups = null; el.className = "usage-board"; }
+  if (grouped) accounts.groups(el, board, (cells, one) => renderUsage(cells, one, { wide: true }));
+  else renderUsage(el, order(board), { wide: true });
   accounts.strip(el, several); // grouped too: a line too narrow for its charts scrolls rather than wraps
   if (page !== "usage") return;
-  if (!usagePast) refreshCached(true); // past windows: only this view asks for them
-  // A tool filter with no meters (reached by Forward, say) shows them all rather than a blank view.
-  // Wide, each account's meters share a row under its name, once the accounts have come.
-  const list = board.length ? board : all;
-  paint(cardView("Plan usage", usageView).firstChild, list, WIDE.matches && list.every((a) => a.acct), "usage-board usage-full",
-    { wide: true, detail: true, icon: licon });
+  if (usagePast !== usageDays()) refreshCached(true); // past windows: only this view asks for them
+  // Every account's meters, whatever the list's account filter: the view picks its own
+  // (usage-view.js). Named and chipped as the list names them; a tool filter with no meters
+  // (reached by Forward, say) shows them all rather than a blank view.
+  const scoped = usage.filter((a) => a.provider === tool), list = (scoped.length ? scoped : usage).map((a) => {
+    const p = (a.dirs || []).map(accounts.profile).find((p) => p?.signed_in);
+    return { ...a, acct: p, chip: p ? accounts.chip(p) : "" };
+  }).filter((a) => a.acct || !accounts.list().length); // a removed account drops out, as in accounts.usage()
+  renderUsageView(cardView("Plan usage", usageView), list, { refetch: () => refreshCached(true), icon: licon("filter", 16) });
 };
 const usageView = document.createElement("section");
 usageView.className = "atlas-panel usage-view";
-usageView.innerHTML = '<div class="usage-board usage-full" role="group" aria-label="Plan usage"></div>';
+usageView.ariaLabel = "Plan usage over time";
 detailCard($("usage-panel"), "Plan usage", "", () => openPage("usage"));
 const loopsView = document.createElement("section");
 loopsView.id = "landing-loops";
@@ -677,11 +677,11 @@ function cardView(title, node) {
 // Plan usage and open loops are both cached by the server; a minute is fresh enough.
 async function refreshCached(force) {
   if (!force && Date.now() - cachedAt < 60000) return;
-  cachedAt = Date.now(); usagePast = page === "usage";
+  cachedAt = Date.now(); usagePast = page === "usage" && usageDays();
   const seq = ++cachedSeq;
   // The accounts with the meters, not after: drawn before them, several accounts' meters
   // stand as one tall grid for a moment before folding into their strip.
-  const [u, l] = await Promise.allSettled([request(usagePast ? "/api/usage?past=1" : "/api/usage"), request("/api/open-loops"), accounts.refresh()]);
+  const [u, l] = await Promise.allSettled([request(usagePast ? `/api/usage?past=${usagePast}` : "/api/usage"), request("/api/open-loops"), accounts.refresh()]);
   if (seq !== cachedSeq) return; // a forced fetch overlapped this one: only the latest answers land
   if (u.status === "fulfilled") usage = u.value.accounts || [];
   if (l.status === "fulfilled") loops = l.value;
