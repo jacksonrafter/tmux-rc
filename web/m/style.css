@@ -1,5 +1,6 @@
 :root {
   --mono: ui-monospace, Menlo, "DejaVu Sans Mono", Consolas, monospace;
+  --term-bg: #101312; --term-dim: #a1ada6; --term-accent: #83ddb3; /* the terminal is dark in both themes */
   color-scheme: dark;
   --bg: #101312; --surface: #191d1b; --raised: #252b28; --line: #343d38;
   --fg: #edf2ef; --muted: #a1ada6; --accent: #83ddb3; --accent-bg: #193c2c; --lift: #2b322f;
@@ -207,9 +208,9 @@ a.icon-button { color: var(--fg); text-decoration: none; }
 .copy-heading { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
 .copy-heading strong { font-weight: 500; overflow-wrap: anywhere; }
 .copyable pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; background: var(--raised); border-radius: 4px; margin: 0; font-size: 12px; max-height: 200px; overflow: auto; }
-#terminal { display: flex; flex-direction: column; flex: 1; min-height: 0; background: #101312; color: #edf2ef; --raised: #252b28; --accent: #83ddb3; }
+#terminal { display: flex; flex-direction: column; flex: 1; min-height: 0; background: var(--term-bg); color: #edf2ef; --raised: #252b28; --accent: var(--term-accent); }
 .terminal-toolbar { display: flex; align-items: center; padding: 0 12px; gap: 2px; border-bottom: 1px solid #343d38; }
-#terminal-status { flex: 1; font-size: 12px; color: #a1ada6; }
+#terminal-status { flex: 1; font-size: 12px; color: var(--term-dim); }
 /* The overscroll cue stands in for the status while you pull past the top (overscroll.js). */
 #scroll-cue { flex: 1; min-width: 0; font-size: 12px; color: var(--accent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .terminal-toolbar:has(#scroll-cue:not([hidden])) #terminal-status { display: none; }
@@ -646,20 +647,18 @@ dialog select, dialog input { width: 100%; min-height: 48px; border: 1px solid v
 /* Desktop review workspace. The same overview, stream and composer keep their state
    when rearranged; each reading surface owns its scroll position. */
 #layout-control { display: flex; align-items: center; flex: none; color: var(--muted); font-size: 13px; }
-#layout-control > span { display: none; }
 #review-layout { background: var(--surface); border: 1px solid var(--line); border-radius: 5px; padding: 5px 8px; font-size: 14px; min-height: 44px; max-width: 150px; }
 #session-chips { display: flex; gap: 6px; padding: 7px 12px; flex-wrap: wrap; background: var(--bg); color: var(--muted); border-top: 1px solid var(--line); }
 #session-chips:empty { display: none; }
 #session-chips span { font-size: 11px; padding: 2px 7px; border-radius: 4px; background: var(--surface); color: inherit; border: 1px solid var(--line); overflow-wrap: anywhere; }
 @media (min-width: 1100px) {
-  #layout-control > span { display: inline; }
   #detail { min-width: 0; grid-template-rows: auto auto minmax(0, 1fr) auto auto; }
   /* The sidebar head's height (--bar), so the two columns' top bars line up. No vertical
      padding: the two text lines set tight and the controls drop to 32px (still a full
      pointer target; the phone keeps 44px), so the row hugs its content. */
   #detail > #heading { grid-row: 1; grid-column: 1 / -1; justify-self: stretch; max-width: none; text-align: left; min-height: var(--bar); padding: 0 18px; border-bottom: 1px solid var(--line); }
   .pane-heading-text { line-height: 1.3; }
-  :is(#heading, .terminal-toolbar) :is(.icon-button, #review-layout) { min-height: 32px; height: 32px; }
+  :is(#heading, .terminal-toolbar) :is(.icon-button, #review-layout-picker summary) { min-height: 32px; height: 32px; }
   :is(#heading, .terminal-toolbar) .icon-button:not(#click-mode, #key-mode) { width: 32px; }
   #heading > #close-pane { margin: 0 -6px; } /* outranks the base -12px, which is sized for the 44px box */
   #detail > #overview, #detail > #terminal { grid-row: 3; min-width: 0; }
@@ -724,6 +723,27 @@ dialog select, dialog input { width: 100%; min-height: 48px; border: 1px solid v
   #mobile-view-toggle { display: none; }
   #review-layout-picker { display: block; }
 }
+/* The wide Layout picker. The trigger is a fixed layout glyph and the value; the menu is
+   titled, and each choice has a line and a wireframe (app.js's LAYOUT_THUMBS) in the panels'
+   own colours, the terminal dark and the overview tinted; Auto's is a sparkle, as it picks. */
+#review-layout-picker summary { font-weight: 600; }
+#review-layout-picker summary > svg { flex: none; }
+#review-layout-picker .header-picker-menu { width: 300px; font-weight: 400; }
+#review-layout-picker .header-picker-menu::before { content: attr(aria-label) "\A" attr(aria-description); display: block; white-space: pre; padding: 6px 10px 4px; font-size: 12px; color: var(--muted); }
+#review-layout-picker .header-picker-menu::first-line { font-size: 14px; font-weight: 600; color: var(--fg); }
+#review-layout-picker label { gap: 10px; }
+#review-layout-picker label > span:not(.thumb) { display: flex; flex-direction: column; line-height: 1.3; }
+.header-picker-menu small { font-size: 12px; color: var(--muted); }
+.thumb { flex: none; display: grid; place-items: center; width: 44px; height: 30px; margin-left: auto; padding: 2px; box-sizing: border-box; border: 1px solid var(--line); border-radius: 4px; color: var(--accent); font-size: 16px; }
+label:has(:checked) > .thumb { border-color: var(--accent); }
+label:has([value="auto"]) > .thumb { border-style: dashed; }
+.thumb svg { width: 100%; height: 100%; fill: none; stroke-width: 1; stroke-linecap: round; stroke-linejoin: round; }
+.thumb .term rect { fill: var(--term-bg); }
+.thumb .term path { stroke: var(--term-dim); }
+.thumb .term .prompt { stroke: var(--term-accent); }
+.thumb .over rect { fill: var(--accent-bg); }
+.thumb .over rect + rect { fill: color-mix(in srgb, var(--accent) 55%, transparent); }
+.thumb .over path { stroke: var(--muted); }
 
 /* Mobile reuses the desktop dashboard without squeezing it into the pane list. */
 @media (max-width: 1099px) {
