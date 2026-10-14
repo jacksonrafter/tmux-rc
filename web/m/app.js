@@ -303,8 +303,9 @@ function route() {
   active = state.pane;
   focusPushComposer = state.compose;
   ({ dashboard, view, filter, page } = state);
-  // A phone's tabs are one-of: a link with several states keeps the first (Needs you first).
-  if (!WIDE.matches) filter = filter.slice(0, 1);
+  // A phone's tabs are one-of, and Idle has none: a link keeps the first state it has a tab
+  // for (Needs you first), so a pressed tab always says what the list shows.
+  if (!WIDE.matches && filter.length !== (filter = filter.filter((f) => $(`${f}-tab`)).slice(0, 1)).length) writeHash(formatHash({ ...state, filter })); // the URL says so too
   if (state.q !== $("search").value.trim()) $("search").value = state.q; // a reload, a link or Back: typing writes the URL, not this
   if (accounts.follow(state.acct)) paintUsage(); // the strip and meters are filtered too
   if (page !== wasPage) { $("dash-page").replaceChildren(); $("dash-page")._signature = null; } // each view builds afresh
@@ -393,15 +394,18 @@ function renderList() {
   const inline = renderSidebar.drafts.get(active);
   if (inline) { draft().append(inline); inline.editor.remove(); renderSidebar.drafts.delete(active); }
   renderSidebar.answers.prune(subset);
-  if (WIDE.matches) { renderSidebar(subset, query, filter); placeRail(); }
-  else renderPhoneList(subset);
+  if (WIDE.matches) { renderSidebar(subset, query, filter); placeRail(); } else { $("app").classList.remove("rail"); placePill(); renderSidebar.marks(filter); renderPhoneList(subset); } // a folded sidebar's class would hide the chips
   show("empty", !subset.length);
   text($("empty"), emptyMessage(query));
   // Empty, while panes the filter hides need you: say so, a click from them.
-  const needing = subset.length ? [] : panes.filter(needsYou), hidden = needing.length;
-  show("empty-needs", hidden > 0);
+  const needing = subset.length ? [] : panes.filter(needsYou), hidden = needing.length, accts = accounts.on();
+  // A phone's list narrowed to some accounts says so at its foot too, a tap from all of them.
+  const scopedOn = !hidden && !WIDE.matches && accts.length > 0, scoped = subset.filter((p) => !outside.has(p.pane_id)).length; // not the pinned
+  show("empty-needs", hidden > 0 || scopedOn);
+  $("empty-needs").dataset.all = scopedOn ? "accounts" : "needs";
   // "On other accounts" only when that is what hides every one of them.
-  text($("empty-needs"), `${hidden} pane${hidden === 1 ? "" : "s"} ${needing.some(accounts.matches) || !accounts.on().length ? "outside the filter" : "on other accounts"} need${hidden === 1 ? "s" : ""} you · Show`);
+  text($("empty-needs"), scopedOn ? `${scoped} ${accts.join(" or ")} pane${scoped === 1 ? "" : "s"} · Show all accounts`
+    : `${hidden} pane${hidden === 1 ? "" : "s"} ${needing.some(accounts.matches) || !accts.length ? "outside the filter" : "on other accounts"} need${hidden === 1 ? "s" : ""} you · Show`);
   text($("all-count"), mine.length);
   text($("attention-count"), (pinNeeds ? panes : mine).filter(asks).length);
   for (const f of ["working", "finished"]) text($(`${f}-count`), mine.filter((p) => matchesFilter(p, [f])).length);
@@ -1377,7 +1381,7 @@ new ResizeObserver(fadeKeys).observe($("keys"));
 $("keyboard").onclick = () => { const open = $("keys").hidden; show("keys", open); $("keyboard").setAttribute("aria-expanded", open); if (open) fadeKeys(); };
 html($("dashboard-tab"), `<span class="nav-icon">${licon("gauge")}</span><span>Dashboard</span>`); // the gauge is Dashboard's everywhere; the 2×2 grid is the layout picker's
 $("dashboard-tab").onclick = $("dash-nav").onclick = () => openDashboard();
-$("empty-needs").onclick = () => { filter = ["attention"]; $("search").value = ""; stayPut({ acct: [] }); };
+$("empty-needs").onclick = () => { if ($("empty-needs").dataset.all === "needs") { filter = ["attention"]; $("search").value = ""; } stayPut({ acct: [] }); };
 // Close only leaves the pane, exactly like Back (which stands in for it on a narrow screen).
 $("back").onclick = $("close-pane").onclick = () => navigate();
 // Typing only rewrites the URL's q (url-state.js) in place: a whole route() per keystroke would refetch the pane.
@@ -1811,11 +1815,16 @@ function placeChrome() {
     if (WIDE.matches) $(slot).append($(id)); else homes[id].after($(id));
   }
   $("sb-sticky").before($("sb-nav"));
-  // The account filter (accounts.js): wide, a group in the list's filter menu and its
-  // pill under search; on a phone, chips under search and the pill under the header.
-  if (WIDE.matches) { renderSidebar.picker.lastChild.append(accounts.filter, ...renderSidebar.views); $("find").after(accounts.pill); }
-  else { $("find").after(accounts.filter); document.querySelector(".app-header").after(accounts.pill); }
-  accounts.strip(accounts.filter, !WIDE.matches);
+  // The account filter (accounts.js) is a group in the filter menu in both layouts (a phone's
+  // opens as a bottom sheet); the active filters' chips are placed by placePill().
+  renderSidebar.picker.lastChild.append(accounts.filter, ...renderSidebar.views);
+  placePill();
+}
+// The active filters' chips: under search, but on a phone's dashboard (no search there) under
+// its header, so a filter is never on without saying so.
+function placePill() {
+  const at = !WIDE.matches && dashboard ? document.querySelector(".app-header") : $("find");
+  if (accounts.pill.previousElementSibling !== at) at.after(accounts.pill);
 }
 // Folded to the rail, the controls move in the DOM to the order they show in (expand, +,
 // search, filter, Dashboard, Chat, Voice, the panes, Settings), so Tab walks them top down.
