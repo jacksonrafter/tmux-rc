@@ -195,8 +195,9 @@ def test_wide_screens_fill_the_main_column_and_let_the_seam_move():
     assert 'show("landing", dashboardVisible())' in app
     assert "!active && (WIDE.matches || dashboard)" in app
     assert "renderLanding()" in app
-    # The same helpers the tabs count with — not a parallel definition that can drift.
-    assert "mine.filter(asks)" in app and "mine.filter(isRunning)" in app
+    # The tabs count with the filters' own predicates, which are the list's sections — not a
+    # parallel definition that can drift.
+    assert ".filter(asks).length" in app and "mine.filter((p) => matchesFilter(p, [f]))" in app
 
     # The drag handle writes a variable the grid clamps; the clamp is the real guard.
     assert "--sidebar" in css and "clamp(260px" in css
@@ -218,6 +219,22 @@ def test_wide_usage_strip_resizes_hides_and_draws_once():
     assert 'setUsageMode("off")' in app and '["Undo", () => setUsageMode(was)]' in app
     assert 'WIDE.matches && usageMode !== "off" ? "on" : usageMode' in app
     assert 'request("/api/open-loops"), accounts.refresh()])' in app
+
+
+def test_settings_holds_what_the_old_menus_did():
+    """The ☰ dropdown and the sidebar's icon row are gone (docs/design/sidebar.md): every
+    control they held lives in the one Settings, on desktop and phone alike, and Settings
+    and New window dock beside the sidebar through one helper."""
+    root = Path(__file__).resolve().parents[1] / "web/m"
+    html = (root / "index.html").read_text()
+    start = html.index('<dialog id="settings"')
+    settings = html[start:html.index("</dialog>", start)]
+    for control in ("accounts-open", "push", "theme", "usage-mode", "sort", "docs"):
+        assert f'id="{control}"' in settings, control
+    for gone in ("more-menu", "sb-foot"):
+        assert f'id="{gone}"' not in html
+    app = (root / "app.js").read_text()
+    assert 'openBeside($("settings")' in app and 'openBeside($("launch-dialog")' in app
 
 
 def test_chat_pasted_image_keeps_input_height_and_header_ends_chat():

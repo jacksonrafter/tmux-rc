@@ -43,7 +43,7 @@ const SHOTS = [
   ["mobile-activity", PHONE, "dark", "#view=dashboard", reach(".atlas-pulse", true)],
   ["mobile-list", PHONE, "light", ""],
   ["mobile-list-dark", PHONE, "dark", ""],
-  ["mobile-more-menu", PHONE, "light", "", (page) => page.click("#more-button")],
+  ["mobile-settings", PHONE, "light", "", (page) => page.click("#settings-open")],
   ["mobile-usage", PHONE, "light", "", (page) => page.click("#usage")],
   ["mobile-usage-detail", PHONE, "dark", "#view=usage"],
   ["mobile-usage-weekly", PHONE, "light", "#view=usage", pickRange("Weekly")],
@@ -62,6 +62,10 @@ const SHOTS = [
   ["mobile-chat-resume", PHONE, "light", "", chat("Resume the checkout session")],
   ["mobile-chat-minimized", PHONE, "light", "", async (page) => { await chat("Which panes need me?")(page); await page.click("#voice-close"); }],
   ["mobile-no-tmux", PHONE, "light", "", noTmux],
+  // The sidebar (docs/design/sidebar.md): Chat open from the head, Settings beside it, and the rail.
+  ["wide-places", WIDE, "light", "#pane=%259", (page) => page.click("#chat")],
+  ["wide-settings", WIDE, "dark", "#view=dashboard", (page) => page.click("#settings-open")],
+  ["wide-rail", WIDE, "light", "#pane=%259", async (page) => { await page.click("#collapse"); await page.hover("#side-list .sb-rail >> nth=2"); await page.locator("#side-hover").waitFor(); }],
   ["wide-new-session", WIDE, "light", "", async (page) => { await noTmux(page); await page.click(".start-session:not([hidden])"); }],
 ];
 
@@ -82,10 +86,11 @@ const TWO_ACCOUNTS = [
   })],
   ["accounts-mobile-list", PHONE, "light", "", two()],
   ["accounts-mobile-list-dark", PHONE, "dark", "", two()],
-  ["accounts-mobile-menu", PHONE, "light", "", two((page) => page.click("#more-button"))],
-  ["accounts-mobile-filtered", PHONE, "dark", "", two(async (page) => { await page.click('#list-nav [data-filter="running"]'); await page.click('#acct-filter [data-acct="claude-personal"]'); })],
+  ["accounts-mobile-settings", PHONE, "light", "", two((page) => page.click("#settings-open"))],
+  ["accounts-mobile-filtered", PHONE, "dark", "", two(async (page) => { await page.click('#list-nav [data-filter="working"]'); await page.click('#acct-filter [data-acct="claude-personal"]'); })],
   ["accounts-wide-filter", WIDE, "light", "", two((page) => page.click("#side-filter-picker summary"))],
-  ["accounts-wide-filtered", WIDE, "dark", "", two(async (page) => { await page.click("#side-filter-picker summary"); await page.click('#side-filter-picker label:has([value="running"])'); await page.click("#side-filter-picker summary"); await page.click('#acct-filter [data-acct="claude"]'); })],
+  ["accounts-wide-rail", WIDE, "dark", "#pane=%2513", two((page) => page.click("#collapse"))],
+  ["accounts-wide-filtered", WIDE, "dark", "", two(async (page) => { await page.click("#side-filter-picker summary"); await page.click('#side-filter-picker [data-v="working"]'); await page.click('#acct-filter [data-acct="claude"]'); await page.click("#side-filter-picker summary"); })],
   ["accounts-mobile-dashboard", PHONE, "light", "#view=dashboard", two((page) => page.locator("#usage-panel").scrollIntoViewIfNeeded())],
   ["accounts-mobile-pane", PHONE, "light", "#pane=%2513", two()],
   ["accounts-mobile-pane-menu", PHONE, "dark", "#pane=%2513", moveMenu()],
@@ -93,8 +98,8 @@ const TWO_ACCOUNTS = [
   ["accounts-mobile-moved", PHONE, "light", "#pane=%2513", moveMenu("#move-pane", "Exit the old pane"), "#move-dialog"],
   ["accounts-mobile-new-window", PHONE, "light", "", two(async (page) => { await page.click("#new-window"); await page.waitForSelector(".acct-pick"); })],
   ["accounts-mobile-consent", PHONE, "light", "", two(chat("Tell e2e triage to rerun it headed", "#voice-log .propose .acct-badge"))],
-  ["accounts-mobile-accounts", PHONE, "dark", "", two(async (page) => { await page.click("#more-button"); await page.click("#accounts-open"); })],
-  ["accounts-mobile-add", PHONE, "light", "", two(async (page) => { await page.click("#more-button"); await page.click("#accounts-open"); await page.click("#acct-dialog [data-add]"); await page.fill("#acct-name", "Side project"); })],
+  ["accounts-mobile-accounts", PHONE, "dark", "", two(async (page) => { await page.click("#settings-open"); await page.click("#accounts-open"); })],
+  ["accounts-mobile-add", PHONE, "light", "", two(async (page) => { await page.click("#settings-open"); await page.click("#accounts-open"); await page.click("#acct-dialog [data-add]"); await page.fill("#acct-name", "Side project"); })],
   // Adding "Demo", step by step, each cropped to its sheet (docs/design/agent-accounts.md).
   // Last, and in this order: opening the sign-in window changes the demo server's state.
   ["accounts-add-1-new-window", PHONE, "light", "", two(async (page) => { await page.click("#new-window"); await page.waitForSelector(".acct-pick"); }), "#launch-dialog"],
@@ -110,7 +115,7 @@ const TWO_ACCOUNTS = [
 // (the window open, signing in) or done.
 function addFlow(until) {
   return async (page) => {
-    await page.click("#more-button"); await page.click("#accounts-open");
+    await page.click("#settings-open"); await page.click("#accounts-open");
     const added = page.locator('#acct-dialog [data-remove="~/.claude-demo"]'); // by an earlier shot
     if (await added.count()) { // remove it, and wait for the list to come back without it
       await added.click(); await page.click("#acct-dialog [data-remove-ok]");
@@ -194,7 +199,7 @@ async function showLoops(page) {
   await page.locator("#landing-loops summary").first().waitFor({ timeout: 5000 }).catch(() => {});
 }
 
-// The Sub-agents toggle is on by default; show its lines under activity cards too.
+// The sub-agents count's switch is on by default; show their lines under activity cards too.
 async function showSubagents(page) {
   await page.locator(".sb-group", { hasText: "Working" }).locator(".sb-icon").click();
   await page.locator(".sb-card", { hasText: "terraform plan review" }).scrollIntoViewIfNeeded();
