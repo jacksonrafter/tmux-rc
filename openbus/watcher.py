@@ -727,6 +727,7 @@ class Watcher:
         # screen the model could not read is that pane's problem, and flagging it as the
         # whole watcher "Stalled" lit the global status on every odd parse.
         history_complete = collected = True
+        unread = set()
         for index, p in enumerate(panes):
             try:
                 s = self._tick_pane(p)
@@ -758,7 +759,7 @@ class Watcher:
                 }
                 _stamp_identity(s, p)  # no tmux_label yet ⇒ stamps label too
             if not self._parse_valid.get(p.id, True):
-                history_complete = False
+                unread.add(p.id)
             if prepublish:
                 s["tmux_active"] = p.id == focused
                 s["events_seq"] = self._events_seq.get(p.id, 0)
@@ -803,11 +804,11 @@ class Watcher:
         self._checkpoint(states, panes)
         self._collection_failed = not collected
         self._publish_states(states, record_history=history_complete and history_server is not None,
-                             history_server=history_server)
+                             history_server=history_server, unread=unread)
         self._gc(alive)
 
     def _publish_states(self, states: list[dict], *, record_history: bool = True,
-                        history_server: str | None = None) -> None:
+                        history_server: str | None = None, unread: set = frozenset()) -> None:
         # Publish a fresh snapshot so replacing/enriching the next startup result does
         # not mutate the deck already visible to HTTP handlers between version bumps.
         with self._publish_lock:
@@ -823,7 +824,13 @@ class Watcher:
                 self._collection_failed = True
                 return
             if history_server is None or current == history_server:
-                self.history.record(self.states, current, births=self._birth)
+                # An unread screen is recorded as unknown, not as its last card: one pane
+                # whose parse keeps failing must not stop the whole fleet's history, which
+                # froze it for days when an idle pane's screen never changed again. Its
+                # workers are the old card's too, so none of them count as observed.
+                self.history.record([{**s, "activity": "unknown", "subagents": [], "agents": 0}
+                                     if s.get("pane_id") in unread else s
+                                     for s in self.states], current, births=self._birth)
             else:
                 self._collection_failed = True
 
