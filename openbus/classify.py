@@ -248,6 +248,35 @@ def _read_omp_row(result: dict, visible: str) -> None:
         result["working"] = {**(working if isinstance(working, dict) else {}), "elapsed": m[1]}
 
 
+# Claude Code's agent list (under "● main") shows a workflow as fixed-format chrome, read
+# here rather than left to the model: " ○  docs-sweep  ▰▰▱▱  1/2 · 3m37s · ↓ 109.1k tokens".
+# Only rows in that live list count: the "● main" line and the ○/◯/● rows under it, which
+# Claude draws as the last thing on screen, below its input box and footer. A row, or a
+# whole list, quoted in the conversation sits above the input box, so it never matches.
+# A long list ends with an "↓ 2 more" line.
+_AGENT_LIST_RE = re.compile(
+    r"(?:^|\n) *● +main *\n((?: *(?:[○◯●] |[↑↓] \d+ more)[^\n]*(?:\n|\Z))*)\s*\Z")
+_WORKFLOW_ROW_RE = re.compile(
+    r"^ *[○◯●] +(\S+) +[▰▱]+ +((\d+)/(\d+)) · (\S+) · ↓ ?([\d.]+\w?) tokens", re.MULTILINE)
+
+
+def _read_workflow_rows(result: dict, visible: str) -> None:
+    """Each workflow row is one background worker: it replaces whatever the model made of
+    that row (its name as a label, or the bar mistaken for one) with the row's own read."""
+    rows = [{"label": m[1], "state": "done" if m[3] == m[4] else "running",
+             "progress": m[2], "elapsed": m[5], "tokens": m[6]}
+            for block in _AGENT_LIST_RE.findall(visible)
+            for m in _WORKFLOW_ROW_RE.finditer(block)]
+    if rows:
+        subs, names = result.get("subagents"), {r["label"] for r in rows}
+
+        def theirs(a):  # the model's read of a workflow row: its exact name, or the bar
+            label = str(a.get("label")) if isinstance(a, dict) else ""
+            return label in names or bool({"▰", "▱"} & set(label))
+        result["subagents"] = [a for a in (subs if isinstance(subs, list) else [])
+                               if not theirs(a)] + rows
+
+
 def _checklist_text(text: str) -> str:
     """Normalize visible and model-returned task labels for conservative matching."""
     return " ".join(text.split()).casefold()
@@ -1297,6 +1326,8 @@ def classify(
         result.pop("waiting_on", None)
     # Count only workers observed running; waiting/idle/unknown are not active work.
     # Compacting has its own history state but still counts as busy in the dock.
+    if result.get("tool") == "claude":  # its agent list's workflow rows are chrome
+        _read_workflow_rows(result, visible)
     subs = result.get("subagents")
     result["agents"] = (
         sum(1 for a in subs if isinstance(a, dict) and a.get("state") in ("running", "compacting"))

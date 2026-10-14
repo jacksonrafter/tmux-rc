@@ -534,6 +534,29 @@ def test_agents_count_only_observed_busy_workers():
     assert r["agents"] == 2
 
 
+def test_workflow_row_is_read_from_the_agent_list():
+    # The row is chrome, read in code: it replaces the model's mangled read of it (the bar
+    # as a label) and counts as one running worker beside the agent rows.
+    screen = _sample("91_claude_workflow_row_in_agent_list")
+    subs = [{"label": "Review docs-sweep output", "state": "running"},
+            {"label": "▰▰▰▱▱ 1/2", "state": "running"}, {"label": "docs-sweep"}]
+    r = classify(_pane(), screen, _llm({"tool": "claude", "subagents": subs}))
+    assert r["subagents"] == [subs[0], {"label": "docs-sweep", "state": "running",
+                                        "progress": "1/2", "elapsed": "3m37s", "tokens": "109.1k"}]
+    assert r["agents"] == 2
+    empty = screen.replace("▰", "▱").replace("1/2 ·", "0/2 ·")  # a 0/N bar is all ▱
+    subs[1] = {"label": "▱▱▱▱▱ 0/2", "state": "running"}
+    assert classify(_pane(), empty, _llm({"tool": "claude", "subagents": subs}))["agents"] == 2
+    done = screen.replace("1/2 ·", "2/2 ·").replace("○", "◯") + "\n  ↓ 2 more"  # either circle
+    assert classify(_pane(), done, _llm({"tool": "claude"}))["subagents"][0]["state"] == "done"
+    # Only Claude's own agent list: a quoted row, or a shell printing one, gains no worker.
+    quoted = screen.replace(" ●  main\n", "")
+    assert "subagents" not in classify(_pane(), quoted, _llm({"tool": "claude"}))
+    head, sep, block = screen.partition(" ●  main\n")  # the whole list quoted above the box
+    assert "subagents" not in classify(_pane(), sep + block + "\n" + head, _llm({"tool": "claude"}))
+    assert "subagents" not in classify(_pane(), screen, _llm({"tool": "shell"}))
+
+
 def test_agents_count_defaults_zero_without_subagents():
     assert classify(_pane(), "…", _llm({"activity": "running"}))["agents"] == 0
     # A non-list subagents (model glitch) must not leak through as a count.
