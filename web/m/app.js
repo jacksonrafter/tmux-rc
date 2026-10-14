@@ -1168,24 +1168,36 @@ function cursorIO(id) {
 // Send a draft to pane `id`: the pane's own composer and a sidebar card's Reply both come
 // through here, so they share one endpoint and one confirmation. Resolves to delivered.
 // `value` is a Composer, or the password input, whose text goes as the one "secret" field.
+// The draft is cleared as it goes, not when the reply lands: typing straight after Enter
+// is the next message, and clearing on the reply erased it. A failed send puts the sent
+// draft back in front of whatever was typed since (a password only into an empty field).
 async function compose(id, value) {
-  const secret = value === $("secret");
+  const secret = value === $("secret"), sent = secret ? value.value : value.segments();
+  const form = new FormData();
+  if (secret) form.append("secret", sent);
+  else for (const segment of sent) {
+    if (segment.file) form.append("image", segment.file);
+    else form.append("text", segment.text);
+  }
+  if (secret) value.value = "";
+  else { value.replace([]); value.pendingEnter = false; }
   sending = true; notice(); render();
   try {
-    const form = new FormData();
-    if (secret) form.append("secret", value.value);
-    else for (const segment of value.segments()) {
-      if (segment.file) form.append("image", segment.file);
-      else form.append("text", segment.text);
-    }
     await paneInput.run(id, () => request(paneUrl(id, "compose"), { method: "POST", body: form }, 45000));
-    if (secret) value.value = "";
-    else { value.replace([]); value.pendingEnter = false; }
-    if (active === id) text($("draft-status"), "Sent");
+    // Not over a next draft typed while this one went: that one is unsent.
+    if (active === id && !(secret ? value.value : draft(id).segments().length)) text($("draft-status"), "Sent");
     startState();
     return true;
-  } catch { notice("Delivery could not be confirmed. Draft kept; check the terminal before retrying."); return false; }
-  finally { sending = false; render(); }
+  } catch {
+    if (secret) { if (active === id && !value.value) value.value = sent; } // the one field is the open pane's
+    else {
+      // Into whichever composer holds this pane's draft now: opening the pane mid-send moves
+      // a sidebar Reply's draft into the pane's own composer and detaches the Reply.
+      const owner = renderSidebar.drafts.get(id) === value ? value : draft(id), typed = owner.segments();
+      owner.replace([...owner.adopt(sent), ...typed.length ? [{ text: "\n" }] : [], ...typed]);
+    }
+    notice("Delivery could not be confirmed. Draft kept; check the terminal before retrying."); return false;
+  } finally { sending = false; render(); }
 }
 $("reply-form").onsubmit = (event) => {
   event.preventDefault();
