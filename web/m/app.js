@@ -452,7 +452,14 @@ function renderPhoneList(subset) {
   });
 }
 
-function renderLanding() {
+// WebKit lays the dashboard out short for a moment when a repaint swaps nodes under its
+// container query (#landing-main), and that clamps the scroll: a phone at the bottom of the
+// page lands near the top on every poll. A repaint keeps the position it found.
+const steady = (paint) => (...args) => {
+  const landing = $("landing"), top = landing.scrollTop;
+  try { return paint(...args); } finally { if (landing.scrollTop !== top) landing.scrollTop = top; }
+};
+const renderLanding = steady(() => {
   if (page === "heat") return renderHeatView($("dash-page"), $("session-atlas")._scope || {}, licon, closePage);
   if (page === "usage") return paintUsage();
   if (page === "loops") return renderLoops(cardView("Open loops", loopsView), accounts.loops(loops), navigate, licon);
@@ -471,7 +478,7 @@ function renderLanding() {
     $("sessions").scrollTop = $("sb-scroll").scrollTop = $("side-list").scrollTop = 0;
   }, licon, [$("landing-cards")], $("heat-card"), () => openPage("heat"), $("radar-card"), accounts.sessionBadge);
   renderLoopsCard($("loops-card"), accounts.loops(loops), openLane, licon);
-}
+});
 
 // Drag the seam between the sidebar and the main column. Width is a CSS variable the
 // grid clamps, so a stored value from a wider window can never strand the layout, and
@@ -672,7 +679,7 @@ const refreshHistory = (force) => refreshAtlasHistory(request, () => { if (dashb
 const USAGE_MODES = { auto: "Auto", on: "On", off: "Off" };
 let usage = [], loops = null, cachedAt = 0, usageMode = "auto", usagePast = 0, cachedSeq = 0;
 try { const saved = localStorage.getItem("tmuxrc-usage"); if (Object.hasOwn(USAGE_MODES, saved)) usageMode = saved; } catch {}
-const paintUsage = () => {
+const paintUsage = steady(() => {
   // Several accounts: one swipeable strip, the most urgent meter first (accounts.js).
   const all = accounts.usage(usage), several = accounts.any(), order = (list) => several ? accounts.byUrgency(list) : list;
   renderUsage($("usage"), order(shownUsage(all, WIDE.matches && usageMode !== "off" ? "on" : usageMode)), { wide: WIDE.matches });
@@ -699,7 +706,7 @@ const paintUsage = () => {
     return { ...a, acct: p, chip: p ? accounts.chip(p) : "" };
   }).filter((a) => a.acct || !accounts.list().length); // a removed account drops out, as in accounts.usage()
   renderUsageView(cardView("Plan usage", usageView), list, { refetch: () => refreshCached(true), icon: licon("filter", 16) });
-};
+});
 const usageView = document.createElement("section");
 usageView.className = "atlas-panel usage-view";
 usageView.ariaLabel = "Plan usage over time";
