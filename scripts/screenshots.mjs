@@ -46,7 +46,7 @@ const SHOTS = [
   ["mobile-settings", PHONE, "light", "", (page) => page.click("#settings-open")],
   ["mobile-usage", PHONE, "light", "", (page) => page.click("#usage")],
   ["mobile-usage-detail", PHONE, "dark", "#view=usage"],
-  ["mobile-usage-weekly", PHONE, "light", "#view=usage", pickRange("Weekly")],
+  ["mobile-usage-30d", PHONE, "light", "#view=usage", pickRange("30d")],
   ["mobile-heatmap", PHONE, "light", "#view=dashboard", heatCard],
   ["mobile-pane", PHONE, "light", "#pane=%259"],
   ["mobile-needs-you", PHONE, "light", "#pane=%254"],
@@ -236,7 +236,7 @@ async function confirmExpunge(page) {
   await page.waitForSelector("#expunge-dialog[open]");
 }
 
-// The usage view at another range, or (on a phone) another window's chart.
+// The usage view at another range.
 function pickRange(label) {
   return (page) => page.locator(".usage-view .fleet-seg button", { hasText: label }).first().click();
 }
