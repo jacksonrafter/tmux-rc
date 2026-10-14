@@ -1370,6 +1370,7 @@ def test_question_naming_list_items_carries_them():
     question = classify(_pane("claude"), _auto_screen(message), _llm({}))["question"]
     assert question["items"] == ["1. Move the build cache to disk.",
                                  "2. Close idle worker sessions."]
+    assert question["subject"] == "Two ways to free memory, in order:"  # not the old plan's
     for ask in ("Want me to do 1 please?", "Start with 2 tomorrow?", "Make edit 2 immediately?",
                 "Do Item 2 first?", "Do 1 urgently?", "Could you handle 2 separately?",
                 "Do 1 and 2 on staging?", "Do task 1 now?", "Apply fix 2 first?",
@@ -1418,6 +1419,91 @@ def test_question_naming_list_items_carries_them():
     widget = _auto_screen(message + "\n  ❯ 1. Yes\n    2. No").replace("auto mode", "plan mode")
     held = classify(_pane("claude"), widget, _llm({"question": menu}))["question"]
     assert held["answer_style"] == "menu" and "items" not in held
+
+
+def test_question_naming_lettered_options_carries_them_and_the_decision():
+    message = ("Session store\n\n  - Option A: Redis. Fast.\n  - Option B — SQLite.\n\n"
+               "  Two ways to fix the timeouts:\n\n  A. Answer first. Then reserve stock.\n"
+               "  (b) Cache the stock levels.\n\n  Go with A or B?")
+    want = ["A. Answer first.", "B. Cache the stock levels."]
+    for ask in ("Go with A or B?", "A or B?", "Which do you prefer, A or B?",
+                "Is it (a) or (b)?", "Option B, then A?", "Go with A, or B?",
+                "Go with (A) or (B)?", "Is it A or (b)?"):
+        screen = _auto_screen(message.replace("Go with A or B?", ask))
+        question = classify(_pane("claude"), screen, _llm({}))["question"]
+        assert sorted(question["items"]) == want
+        assert question["subject"] == "Two ways to fix the timeouts:"
+    for ask in ("Go with (A)?", "Select A?"):
+        screen = _auto_screen(message.replace("Go with A or B?", ask))
+        single = classify(_pane("claude"), screen, _llm({}))["question"]
+        assert single["items"] == ["A. Answer first."]
+    # A list that opens the agent's turn starts after its "●" marker, with no lead-in.
+    opening = classify(_pane("claude"), "\x1e[visible screen]\x1f\n❯ which store?\n\n" +
+                       _auto_screen("A. Redis\n  B. SQLite\n\n  Go with A or B?").split("\n", 1)[1],
+                       _llm({}))["question"]
+    assert opening["items"] == ["A. Redis", "B. SQLite"] and "subject" not in opening
+    for ask in ("A quick check first?", "Grade A beef?", "Should I run it?", "Use a or b?",
+                "A really quick check first?", "Grade A only?"):
+        screen = _auto_screen(message.replace("Go with A or B?", ask))
+        question = classify(_pane("claude"), screen, _llm({}))["question"]
+        assert "items" not in question and "subject" not in question
+    screen = _auto_screen(message.replace("Go with A or B?", "Grade A only, or choose B?"))
+    assert classify(_pane("claude"), screen, _llm({}))["question"]["items"] == [want[1]]
+    # A heading at the left of an indented list ends it: C starts the new decision's list.
+    screen = _auto_screen("Old:\n  A. Redis\n  B. SQLite\nNew decision:\n  C. Disk\n\n  Go with C?")
+    renamed = classify(_pane("claude"), screen, _llm({}))["question"]
+    assert (renamed["items"], renamed["subject"]) == (["C. Disk"], "New decision:")
+    # A parent row ends the list nested under it: the next nested 2 is a new list's.
+    screen = _auto_screen("Decision one:\n    1. Old nested.\n  A. Parent.\n    2. New nested."
+                          "\n\n  Do 2 now?")
+    assert "subject" not in classify(_pane("claude"), screen, _llm({}))["question"]
+    store = message.partition("\n\n  Two")[0]
+    labelled = classify(_pane("claude"), _auto_screen(store + "\n\n  Option A or B?"),
+                        _llm({}))["question"]
+    assert labelled["items"] == ["A. Redis.", "B. SQLite."]
+    assert labelled["subject"] == "Session store"
+    echo = {"prompt": "Option A or B?", "answer_style": "text",
+            "options": ["Option A: Redis", "- Option B — SQLite", "Option B please"]}
+    screen = _auto_screen(store + "\n\n  Option A or B?").replace("auto mode", "plan mode")
+    table = {"rows": [["Option A", "Redis, fast"], ["(b)", "SQLite"]]}
+    result = classify(_pane("claude"), screen, _llm({"question": echo, "tables": [table]}))
+    assert result["question"]["options"] == ["Option B please"] and result["tables"] is None
+    # Numbers and letters keep the prompt's order, and the first named row leads.
+    for row, body in (("Option A: --use-redis", "--use-redis"), ("Option B: -1 s", "-1 s"),
+                      ("Option B—SQLite", "SQLite"), ("Option B - SQLite", "SQLite")):
+        assert classify_mod._LABELED_ROW_RE.match(row)[3] == body
+    assert not classify_mod._LABELED_ROW_RE.match("  Option A is fastest, but heavier.")
+    # A list with no lead-in of its own has no subject, not the list above's.
+    bare = message.replace("  Two ways to fix the timeouts:\n\n", "").rsplit("\n\n", 1)[0]
+    question = classify(_pane("claude"), _auto_screen(bare + "\n\n  1. Ship it.\n\n  Do 1 now?"),
+                        _llm({}))["question"]
+    assert question["items"] == ["1. Ship it."] and "subject" not in question
+    later = classify(_pane("claude"), _auto_screen(bare + "\n\n  B. New row.\n\n  Choose B?"),
+                     _llm({}))["question"]
+    assert later["items"] == ["B. New row."] and "subject" not in later
+    spaced = classify(_pane("claude"), _auto_screen(
+        "Decision heading:\n\n  A. First.\n\n  B. Second.\n\n  Choose B?"), _llm({}))["question"]
+    assert spaced["items"] == ["B. Second."] and spaced["subject"] == "Decision heading:"
+    fresh = classify(_pane("claude"), _auto_screen(
+        "Old decision:\n  A. Old path.\n\n  New decision:\n  B. New path.\n\n  Choose B?"),
+        _llm({}))["question"]
+    assert fresh["items"] == ["B. New path."] and fresh["subject"] == "New decision:"
+    nested = classify(_pane("claude"), _auto_screen(
+        "Decision heading:\n  A. First.\n     1. Step one.\n     2. Step two.\n  B. Second.\n\n"
+        "  Choose B?"), _llm({}))["question"]
+    assert nested["items"] == ["B. Second."] and nested["subject"] == "Decision heading:"
+    for ask, want in (("Do A, then step 1?", "A1"), ("Do A and 1?", "A1"), ("Do 1 and A?", "1A")):
+        mixed = classify(_pane("claude"), _auto_screen(
+            message + f"\n\n  Steps:\n  1. Ship it now.\n\n  {ask}"), _llm({}))["question"]
+        assert "".join(i[0] for i in mixed["items"]) == want
+        assert mixed["subject"] == ("Steps:" if want[0] == "1" else
+                                    "Two ways to fix the timeouts:")
+    # The parser's echo of a lettered row as a button goes, as a numbered one does.
+    ask = {"prompt": "Go with A or B?", "answer_style": "text",
+           "options": ["A. Answer first", "Go with A"]}
+    screen = _auto_screen(message).replace("auto mode on", "plan mode on")
+    assert classify(_pane("claude"), screen, _llm({"question": ask}))["question"][
+        "options"] == ["Go with A"]
 
 
 @pytest.fixture
