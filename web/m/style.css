@@ -214,7 +214,8 @@ a.icon-button { color: var(--fg); text-decoration: none; }
 #events-empty { font-size: 13px; margin-top: 10px; }
 .copyable { margin-top: 12px; }
 .copy-heading { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
-.copy-heading strong { font-weight: 500; overflow-wrap: anywhere; }
+.copy-heading strong { font-weight: 500; overflow-wrap: anywhere; margin-right: auto; }
+.copy-offer { min-height: 36px; padding: 0 16px; border-radius: 18px; }
 .copyable pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; background: var(--raised); border-radius: 4px; margin: 0; font-size: 12px; max-height: 200px; overflow: auto; }
 #terminal { display: flex; flex-direction: column; flex: 1; min-height: 0; background: var(--term-bg); color: #edf2ef; --raised: #252b28; --accent: var(--term-accent); }
 .terminal-toolbar { display: flex; align-items: center; padding: 0 12px; gap: 2px; border-bottom: 1px solid #343d38; }
@@ -272,6 +273,10 @@ a.icon-button { color: var(--fg); text-decoration: none; }
   -webkit-mask-image: linear-gradient(to right, #000 calc(100% - var(--keys-fade, 0px)), transparent);
   mask-image: linear-gradient(to right, #000 calc(100% - var(--keys-fade, 0px)), transparent); }
 #keys::-webkit-scrollbar { display: none; }
+#offers { display: grid; gap: 6px; padding-bottom: 6px; max-height: 25dvh; overflow-y: auto; } /* never pushes the editor off screen */
+#offers:empty { display: none; }
+#offers button { min-height: 44px; padding: 8px 12px; background: var(--raised); text-align: left; font: 13px/1.35 var(--mono); overflow-wrap: anywhere; }
+#offers button::before { content: attr(data-verb); margin-right: 8px; color: var(--accent); font-weight: 600; }
 #keys button { background: var(--raised); padding: 0 12px; flex: none; min-width: 44px; font-size: 13px; }
 #reply { white-space: pre-wrap; overflow-wrap: anywhere; overflow-y: auto; touch-action: manipulation; }
 #reply:empty::before { content: attr(data-placeholder); color: var(--muted); pointer-events: none; }
