@@ -11,7 +11,7 @@ import { parseHash, formatHash, historyMode, PAGES } from "/m/url-state.js";
 import { overscroll, overscrollState, RESIST_PX, IDLE_MS } from "/m/overscroll.js";
 import { tmuxKey, inputQueue } from "/m/keys.js";
 import { setupSidebar, SHOW, SORTS } from "/m/sidebar.js";
-import { renderUsage, shownUsage } from "/m/usage.js";
+import { renderUsage, shownUsage, inUse, inlineUsage } from "/m/usage.js";
 import { renderUsageView, usageDays } from "/m/usage-view.js";
 import { setupAccounts } from "/m/accounts.js";
 import { renderLoops, renderLoopsCard } from "/m/loops.js";
@@ -683,7 +683,19 @@ try { const saved = localStorage.getItem("tmuxrc-usage"); if (Object.hasOwn(USAG
 const paintUsage = steady(() => {
   // Several accounts: one swipeable strip, the most urgent meter first (accounts.js).
   const all = accounts.usage(usage), several = accounts.any(), order = (list) => several ? accounts.byUrgency(list) : list;
-  renderUsage($("usage"), order(shownUsage(all, WIDE.matches && usageMode !== "off" ? "on" : usageMode)), { wide: WIDE.matches });
+  // The strip names only the accounts in use, judged before Auto drops quiet meters; the idle
+  // ones fold into a "+N" by it (usage.js). A login's panes are those of every dir it covers.
+  const panesOf = (m) => panes.filter((x) => m.dirs?.some((d) => accounts.profile(d)?.panes.includes(x.pane_id)));
+  const { shown, idle } = several ? inUse(accounts.byUrgency(all), panesOf) : { shown: all, idle: [] };
+  renderUsage($("usage"), shownUsage(shown, WIDE.matches && usageMode !== "off" ? "on" : usageMode), { wide: WIDE.matches });
+  // Outside the swipeable strip, so it shows without a swipe: on its top seam wide, its bottom
+  // on a phone. Redrawn only when changed, so a repaint keeps a focused button's focus.
+  const more = accounts.more($("usage").hidden ? [] : idle), was = $("usage-more");
+  if (was?._html !== more || was[WIDE.matches ? "nextElementSibling" : "previousElementSibling"] !== $("usage")) {
+    was?.remove();
+    $("usage").insertAdjacentHTML(WIDE.matches ? "beforebegin" : "afterend", more);
+    if ($("usage-more")) Object.assign($("usage-more"), { _html: more, onclick: openUsage });
+  }
   accounts.strip($("usage"), several);
   $("usage-handle").hidden = $("usage").hidden;
   // The dashboard's card draws every meter as a trend whatever the mode; its view (#view=usage)
@@ -795,7 +807,7 @@ function render() {
   markEnding($("detail"), pane);
   text($("pane-location"), pane ? [sessionOf(pane), pane.window_name || pane.pane_id].filter(Boolean).join(" / ") : "Waiting for session state");
   // Which account it runs on, when that needs saying: first on a phone, which ellipsizes the end.
-  const account = pane && accounts.badge(pane.pane_id);
+  const account = pane && accounts.badge(pane.pane_id, (p) => inlineUsage(usage.find((a) => a.dirs?.includes(p.dir))));
   if (account) $("pane-location").insertAdjacentHTML(wide ? "beforeend" : "afterbegin", wide ? ` · ${account}` : `${account} `);
   for (const id of ["pane-title", "pane-location"]) $(id).title = $(id).textContent; // both ellipsize: hover shows the full text
   $("detail").dataset.layout = effectiveLayout();
@@ -1429,6 +1441,7 @@ function sizeUsage(px = usageHeight, persist = false) {
 const fitUsage = new ResizeObserver(() => {
   const shown = $("usage").offsetHeight;
   $("usage").style.setProperty("--rows", Math.max(1, Math.round(shown / USAGE_ROW)));
+  $("sessions").style.setProperty("--usage-shown", `${shown}px`); // a phone's "+N" sticks to the sticky strip's seam
   for (const [key, value] of Object.entries({ min: USAGE_MIN, max: Math.round($("sessions").clientHeight * 0.6), now: shown })) $("usage-handle").setAttribute(`aria-value${key}`, value);
 });
 for (const el of ["usage", "sessions"]) fitUsage.observe($(el));
