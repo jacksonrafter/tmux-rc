@@ -260,10 +260,18 @@ export function setupSidebar(ctx) {
     if (!form.contains(draft().editor)) form.prepend(draft().editor);
     form.querySelector("button[type=submit]").disabled = ctx.sending() || !draft().segments().length;
   }
-  // At a password prompt Reply opens the pane, whose own composer is the password field.
+  // On a phone, or at a password prompt, Reply opens the pane: its composer sits above the
+  // keyboard (and at a password prompt is the password field), scrolled to the question.
   function openReply(id, secret) {
-    if (secret && id !== ctx.active()) ctx.navigate(id);
-    if (id === ctx.active()) { document.getElementById(secret ? "secret" : "reply").focus(); return; } // its own composer is on screen
+    if ((secret || !ctx.wide()) && id !== ctx.active()) ctx.navigate(id);
+    if (id === ctx.active()) { // its own composer is on screen
+      document.getElementById(secret ? "secret" : "reply").focus({ preventScroll: true });
+      // Until the keyboard shrinks the pane there may be too little below the question to
+      // lift it to the top, so land again once it is up.
+      const land = (behavior) => document.getElementById("question").scrollIntoView({ block: "start", behavior });
+      window.visualViewport?.addEventListener("resize", () => land("smooth"), { once: true });
+      return land("instant");
+    }
     replyTo = id;
     if (!drafts.has(id)) drafts.set(id, new Composer(repaint, ctx.notice, { id: "side-reply", label: "Reply to this pane" }));
     repaint();
