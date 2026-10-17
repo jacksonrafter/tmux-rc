@@ -1,6 +1,6 @@
 import { headerPicker, dismissable } from "/m/header-picker.js";
 import { renderAtlas, renderFleet, refreshAtlasHistory, renderHeatView, detailCard, pageHead } from '/m/atlas.js';
-import { renderCaptureLines, linkifyText, lastLine, joinWrapped } from "/terminal.js";
+import { renderCaptureLines, linkifyText, besideHeld } from "/terminal.js";
 import { setupLiveMode } from "/m/live.js";
 import { Composer, bindAttach, enterSubmits } from "/m/composer.js";
 import { answerBody, pickCursorRow, STALE, UNTAKEN } from "/cursor-pick.js";
@@ -331,6 +331,7 @@ function route() {
   const wasDashboardVisible = dashboardVisible(), wasPage = page;
   const state = parseHash(location.hash, defaultView());
   const changed = state.pane !== active;
+  dropGesture();
   active = state.pane;
   focusPushComposer = state.compose;
   ({ dashboard, view, filter, page } = state);
@@ -1254,21 +1255,24 @@ const selected = (node) => { const s = getSelection(); return !!s?.rangeCount &&
 // the place the old frame showed them, so whatever you were reading stays put. If a
 // selection now holds that frame back, they are dropped and fetched again later.
 //
-// A line tmux wrapped across a chunk's edge arrives in two pieces (tmux.capture_history),
-// so the held piece is rendered again together with the new one and replaced: a long URL
-// stays one link, in its own colors. Each chunk's first and last lines keep their raw text
-// on their nodes (the last with the style it starts in), and the last whether it wraps on.
-// A held piece inside a selection is left alone rather than replaced under it.
+// A line wrapped across a chunk's edge, by tmux (tmux.capture_history says so) or by the
+// app's own newline, arrives in two pieces, so each chunk is rendered against the raw rows
+// already held at that end (`head` and `tail`, and whether the last row wraps on) and the
+// held lines it changes are replaced (besideHeld): a long URL stays one link, in its own
+// colors. A held line inside a selection is left alone rather than replaced under it.
 async function loadEarlier() {
   const h = earlier, id = active, box = $("terminal-scroll"), pre = $("earlier");
   if (h.busy || !id || !h.screen || captureDirty || backingOff()) return;
   h.busy = true;
-  let held = [], gone = null, heldEnd = h.end, since = 0, older = false;
+  const whole = (raw) => raw.split("\n").length >= pre.children.length; // one end's rows are all there are, so both ends'
+  const draw = (node, markup) => { node.innerHTML = `${markup}\n`; node.markup = markup; return node; };
+  let held = [], redraws = [], heldEnd = h.end, heldTail, heldWraps, since = 0, older = false; // the staged rows' own, while any are
   const land = (force) => {
     if (paintedFrame !== latestFrame && selectionHolds(frameLines())) { captureDirty = true; return; }
-    if (gone && selected(gone)) return; // selected since: fetched again, and left split this time
+    if (redraws.some(([node]) => selected(node))) return; // selected since: fetched again, left as shown meanwhile
     const tail = following();
-    gone?.remove(); pre.append(...held); h.end = heldEnd;
+    for (const [node, markup] of redraws) draw(node, markup);
+    pre.append(...held); Object.assign(h, { end: heldEnd, tail: heldTail, wraps: heldWraps }); if (whole(heldTail)) h.head = heldTail;
     if (tail) box.scrollTop = box.scrollHeight;
     if (paintedFrame !== latestFrame) paintCapture(force); // the frame that waited
   };
@@ -1283,7 +1287,7 @@ async function loadEarlier() {
       // wait to land (at most 5s): a prepend could replace the piece they are to replace,
       // or a frame painted meanwhile could strand them.
       const up = h.asked || !following(), want = latestGeometry[0];
-      older = (!older || heldEnd >= want) && !held.length && h.top > 0 && box.scrollTop < box.clientHeight && up;
+      older = (!older || heldEnd >= want) && heldEnd === h.end && h.top > 0 && box.scrollTop < box.clientHeight && up;
       const gap = heldEnd < want && up && !older;
       if (!gap && !older) return;
       const unseen = heldEnd < shownTop; // 1000: the daemon's cap
@@ -1298,28 +1302,32 @@ async function loadEarlier() {
       // frame already here keep it unknown); the frame waiting, if any, paints as it is.
       if (screen !== h.screen) { latestGeometry = [latestGeometry[0], ""]; paintCapture(true); return; }
       // A frame painted meanwhile moved the split this chunk was asked by: start the gap over.
-      if (gap && shownTop !== shown) { held = []; gone = null; heldEnd = h.end; continue; }
+      if (gap && shownTop !== shown) { held = []; redraws = []; heldEnd = h.end; continue; }
       const edge = gap ? held.at(-1) || pre.lastChild : pre.firstChild;
-      const join = edge && (gap ? edge.wraps : wraps) && !selected(edge);
-      const raw = !join ? rows : gap ? joinWrapped(edge.raw, rows) : joinWrapped(rows, edge.raw);
-      const nodes = renderCaptureLines(raw, { color: true }).map((markup) => {
-        const node = document.createElement("span"); node.innerHTML = `${markup}\n`; return node;
-      });
-      nodes[0].raw = raw.slice(0, raw.indexOf("\n") >>> 0);
-      Object.assign(nodes.at(-1), { raw: lastLine(raw), wraps: gap || !join ? wraps : edge.wraps });
+      const join = edge && !selected(edge);
+      const [endRaw, endWraps] = heldEnd !== h.end ? [heldTail, heldWraps] : [h.tail, h.wraps]; // rows staged (a wrap's may add no node)
+      const { lines, raw, again } = besideHeld(rows, join ? gap ? endRaw : h.head : null, gap, gap ? endWraps : wraps);
+      // The held rows the new ones change are redrawn in place, from the edge in, unless
+      // selected; staged rows run on into the shown rows above them.
+      const near = (n) => !gap ? n.nextSibling : !held.includes(n) ? n.previousSibling : n !== held[0] ? held[held.indexOf(n) - 1] : pre.lastChild;
+      const changes = [];
+      for (let n = join && edge, i = 0; n && i < again.length; n = near(n), i++) if (!selected(n)) changes.push([n, again[i]]);
+      const redraw = () => { for (const [node, markup] of changes) draw(node, markup); };
+      const nodes = lines.map((markup) => draw(document.createElement("span"), markup));
+      if (gap) { heldTail = raw; heldWraps = wraps; } else h.head = raw;
       if (!gap) {
-        holdView(() => { if (join) edge.remove(); pre.prepend(...nodes); h.top = start; h.loading = h.asked = false; paintEarlierCue(); });
+        holdView(() => { redraw(); pre.prepend(...nodes); if (whole(h.head)) h.tail = h.head; if (!edge) h.wraps = wraps; h.top = start; h.loading = h.asked = false; paintEarlierCue(); });
       } else if (unseen) {
-        holdView(() => { if (join) edge.remove(); pre.append(...nodes); h.end = heldEnd = before; }, true);
+        holdView(() => { redraw(); pre.append(...nodes); h.end = heldEnd = before; Object.assign(h, { tail: raw, wraps }); if (whole(raw)) h.head = raw; }, true);
       } else {
-        if (join && edge === held.at(-1)) held.pop(); else if (join) gone = edge;
+        redraws.push(...changes); // with the rows that land
         held.push(...nodes); heldEnd = before;
         // Caught up, they land with the newest frame. Output that keeps ahead (over a
         // request's worth, or for 5s) can't hold them back: they land and that frame paints
         // anyway, the rows it passed becoming a gap above it.
         const behind = latestGeometry[0] - heldEnd, now = performance.now();
         since ||= now;
-        if (behind <= 0 || behind > 1000 || now - since > 5000) { land(behind > 0); held = []; gone = null; heldEnd = h.end; since = 0; }
+        if (behind <= 0 || behind > 1000 || now - since > 5000) { land(behind > 0); held = []; redraws = []; heldEnd = h.end; since = 0; }
       }
     }
   } catch { h.failed = performance.now(); setTimeout(loadEarlier, 3000); }
@@ -1786,7 +1794,9 @@ addEventListener("touchmove", (e) => {
   if (!drag.live) {
     if (dy > Math.abs(dx)) { if (dy > 10) drag = null; return; } // vertical: a scroll, not a drag
     if (Math.abs(dx) < 10 || !drag.open && dx < 0) return;
-    drag.live = true; clearTimeout(settling); drawer.classList.remove("settling"); if (!drawer.open) $("menu-open").click(); drag.base = drag.open ? 0 : -drawer.offsetWidth;
+    // From where it is, which may be partway through settling, read before .settling is dropped.
+    const x = drawer.open && new DOMMatrix(getComputedStyle(drawer).transform).m41;
+    drag.live = true; clearTimeout(settling); drawer.classList.remove("settling"); if (!drawer.open) $("menu-open").click(); drag.base = x === false ? -drawer.offsetWidth : x;
   }
   drag.v = (t.clientX - drag.at) / Math.max(1, e.timeStamp - drag.t); drag.at = t.clientX; drag.t = e.timeStamp;
   slide(Math.min(0, Math.max(-drawer.offsetWidth, drag.base + dx)));
@@ -1798,14 +1808,18 @@ $("back").onclick = $("close-pane").onclick = () => navigate();
 // A phone's Back is also a swipe in from the left edge: it presses the Back of the pane or the
 // view (on the list, the same swipe draws the drawer in). Not under an open sheet, not from a strip scrolled sideways (that swipe scrolls
 // it), and not once the URL moved under the finger: Safari's own edge swipe went back already.
+// Installed only: in a browser tab that edge is the browser's own Back, and both at once slide
+// two things in (☰ still opens the drawer there, and an open one still drags).
 let edge = null;
 addEventListener("touchstart", (e) => {
   if (drag?.live) return; // a second finger: the drag stays the first one's
   const t = e.touches[0], scrolled = (n) => n instanceof Element && (n.scrollLeft > 0 || scrolled(n.parentNode));
-  edge = !WIDE.matches && e.touches.length === 1 && t.clientX < 20 && !scrolled(e.target) && !document.querySelector("dialog[open]") ? { x: t.clientX, y: t.clientY, href: location.href } : null;
+  edge = standalone() && !WIDE.matches && e.touches.length === 1 && t.clientX < 20 && !scrolled(e.target) && !document.querySelector("dialog[open]") ? { x: t.clientX, y: t.clientY, href: location.href } : null;
   drag = !WIDE.matches && e.touches.length === 1 && (drawer.open || edge && !active && !page) ? { x: t.clientX, y: t.clientY, at: t.clientX, t: e.timeStamp, v: 0, open: drawer.open } : null;
 }, { passive: true });
-addEventListener("touchcancel", () => { edge = null; if (drag?.live) settle(drag.open); drag = null; });
+// A gesture the page moved under (a touchcancel, or a route() mid-swipe) springs back to where it began.
+const dropGesture = () => { edge = null; if (drag?.live) settle(drag.open); drag = null; };
+addEventListener("touchcancel", dropGesture);
 addEventListener("touchend", (e) => {
   const t = e.changedTouches[0], dx = edge && t.clientX - edge.x;
   if (drag?.live && e.timeStamp - drag.t > 100) drag.v = 0; // held before letting go: no flick
@@ -2215,9 +2229,9 @@ async function launchWindow(launcher, button) {
   finally { launching = false; $("launch-choices").querySelectorAll("button").forEach((button) => { button.disabled = "unavailable" in button.dataset; }); }
 }
 
+const standalone = () => navigator.standalone || matchMedia("(display-mode: standalone)").matches; // installed, not a browser tab
 function fitViewport() {
   const viewport = window.visualViewport, root = document.documentElement;
-  const standalone = navigator.standalone || matchMedia("(display-mode: standalone)").matches;
   const focused = document.activeElement;
   const textInput = focused?.tagName === "INPUT"
     && ["text", "search", "email", "url", "tel", "number", "password"].includes(focused.type);
@@ -2225,7 +2239,7 @@ function fitViewport() {
     || ((textInput || focused?.tagName === "TEXTAREA") && !focused.readOnly && !focused.disabled);
   // Installed mode lets iOS reserve the status bar outside the app. Fill that
   // available viewport while browsing; editors still follow the keyboard.
-  root.classList.toggle("standalone-fill", !!standalone && !editing);
+  root.classList.toggle("standalone-fill", !!standalone() && !editing);
   root.classList.toggle("editing", !!editing); // the keyboard is up: the tab bar steps aside (style.css)
   // Only an editor measures: iOS resizes the visual viewport, not the layout viewport, for
   // its keyboard. At rest CSS sizes the app from dvh, so a height measured with the keyboard
