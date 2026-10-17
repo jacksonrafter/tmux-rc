@@ -86,7 +86,7 @@ def test_classifier_capture_splits_before_wrapping(monkeypatch):
 def test_phone_capture_does_not_add_boundary(monkeypatch):
     calls = []
     monkeypatch.setattr(tmux, "_run", lambda args: calls.append(args) or "plain\n")
-    assert tmux.capture_pane("%1", keep_colors=True) == "plain"
+    assert tmux.capture_pane("%1") == "plain"
     assert "if-shell" not in calls[0]
 
 
@@ -176,14 +176,14 @@ def test_real_tall_pane_moves_its_top_rows_into_history(tmp_path, monkeypatch):
         monkeypatch.setattr(tmux, "_run", run)
         run(["send-keys", "-t", pane, "seq 1 300", "Enter"])
         for _ in range(100):
-            if "\n300\n" in tmux.capture_pane(pane, keep_colors=True):
+            if "\n300\n" in tmux.capture_live(pane)[0]:
                 break
             time.sleep(0.02)
         history, visible = tmux.capture_pane(pane, mark_dim=True).split(tmux.VISIBLE_SCREEN)
         assert "\n1\n" in history and "\n1\n" not in visible
         assert "\n300\n" in visible
         assert len(visible.strip("\n").split("\n")) == tmux.VIEWPORT_ROWS
-        assert "\n1\n" in tmux.capture_pane(pane, keep_colors=True)  # the live view is whole
+        assert "\n1\n" in tmux.capture_live(pane)[0]  # the live view is whole
     finally:
         subprocess.run(["tmux", "-S", socket, "kill-server"], check=False,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
