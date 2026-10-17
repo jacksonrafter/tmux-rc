@@ -159,7 +159,7 @@ const ofAgent = (p) => !scope.tools.length || scope.tools.includes(p.tool || "ot
 try { pinNeeds = localStorage.getItem("tmuxrc-pin-needs") !== "off"; } catch {}
 const setPinNeeds = (v) => { pinNeeds = v === "on"; try { localStorage.setItem("tmuxrc-pin-needs", v); } catch {} renderList(); paintSettings(); };
 const setSort = (v) => { sort = v; try { localStorage.setItem("tmuxrc-sort", v); } catch {} renderList(); paintSettings(); };
-let sending = false, prefix = "C-b", stateController, detailController, detailId = null, fitCols = 0; // fitCols: see fitTo
+let sending = false, prefix = "C-b", stateController, detailController, detailId = null, fitCols = 0, fitAlt; // see fitTo; fitAlt: is the streamed app full screen
 let streamedLayout = null;
 let eventsKey = null, latestCapture = "", fontSize = 13;
 // Answers tapped and not yet reflected, per pane (pane id -> { key, option, index, note }): the
@@ -1078,8 +1078,7 @@ function restartDetail() {
   // Leaving the terminal, by pane, view or hidden page, sends a scrolled app home first, so the
   // watcher never keeps parsing old history nobody is looking at.
   if (detailId !== active || !terminalVisible() || document.hidden) wheelHome(detailId);
-  // A terminal stream reports afresh (attachment may have changed), and only it shows the toggle.
-  fitCols = 0; show("fit-pane", false);
+  fitCols = 0; fitAlt = undefined; // a terminal stream reports afresh: attachment, or the pane's app, may have changed
   if (detailId !== active) {
     $("events").replaceChildren(); text($("events-empty"), "Loading activity..."); show("events-empty", true);
     latestCapture = ""; clearCapture(); detailId = active;
@@ -1104,14 +1103,28 @@ function termCols() {
 // One at a time, in the order asked: a tick and untick must reach the daemon in that order.
 // fitCols is what the daemon last took; a failed report leaves it 0 for the stream to retry.
 let fitLine = Promise.resolve(), fitBusy = 0; // fitBusy: reports queued or in flight
+// What to fit: the pane's own pick (made in its menu, so it applies even with a terminal
+// attached), else this browser's default. Picks are kept per pane incarnation.
+const FIT_DEFAULTS = { auto: "Auto", width: "Width only", off: "Off" };
+const FIT_PICKS = { "": "Default", width: "Width", tall: "Tall", off: "Off" };
+const stored = (k, fallback) => { try { return localStorage.getItem(k) ?? fallback; } catch { return fallback; } };
+const store = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
+let fitDefault = stored("tmuxrc-fit-default", "auto"), tallRows = Number(stored("tmuxrc-tall-rows", 500)) || 500;
+let fitPicks = {}; try { fitPicks = JSON.parse(stored("tmuxrc-fit-picks", "{}")) || {}; } catch {}
+const paneKey = (id) => `${id}:${panes.find((p) => p.pane_id === id)?.birth ?? ""}`;
+const fitMode = (id) => fitPicks[paneKey(id)] || fitDefault;
 function fitTo(id, cols) {
-  if (!id || !cols) return; // a hidden view measures nothing
-  const body = { cols, force: $("fit-toggle").checked }, signal = detailController?.signal;
+  // Not before the pane is in state: its own pick is filed under its incarnation, which
+  // only state knows. fitCols stays 0, so the stream's next frame tries again.
+  if (!id || !cols || !panes.some((p) => p.pane_id === id)) return; // a hidden view measures nothing
+  const pick = fitPicks[paneKey(id)], mode = fitMode(id);
+  if (mode === "off" && !pick) { fitCols = cols; return; } // nothing to send: the window is left as it is
+  const body = { cols, mode, rows: tallRows, force: !!pick }, signal = detailController?.signal;
   const current = () => !signal?.aborted && id === active; // a reply to a stream since replaced is stale
   fitBusy++;
   fitLine = fitLine.then(() => post(paneUrl(id, "fit"), body)).finally(() => fitBusy--).then((r) => {
     if (!current() || !terminalVisible()) return fitDue();
-    fitCols = cols; show("fit-pane", r.attached);
+    fitCols = cols;
     refit(); // resized while this was in flight: the last size wins
   }, () => { if (current()) fitCols = 0; else fitDue(); }); // our own failure: the stream's next frame retries
 }
@@ -1120,12 +1133,22 @@ function fitTo(id, cols) {
 const fitDue = () => { if (!fitCols && !fitBusy && terminalVisible()) fitTo(active, termCols()); };
 // Mid-gesture sizes coalesce: while a report is in flight its reply measures again.
 const refit = () => { const cols = !fitBusy && terminalVisible() && termCols(); if (cols && cols !== fitCols) fitTo(active, cols); };
-try { $("fit-toggle").checked = localStorage.getItem("tmuxrc-fit") === "1"; } catch {}
-// A terminal may have attached since: the menu asks again, so the toggle is there to tick.
-$("pane-menu").addEventListener("toggle", () => { if ($("pane-menu").open && terminalVisible()) fitTo(active, termCols()); });
-$("fit-toggle").onchange = () => {
-  try { localStorage.setItem("tmuxrc-fit", $("fit-toggle").checked ? "1" : "0"); } catch {}
-  if (terminalVisible()) fitTo(active, termCols()); // this terminal, measured now
+const refitNow = () => { if (terminalVisible()) fitTo(active, termCols()); }; // this terminal, measured now
+function pickFit(v) {
+  if (v) fitPicks[paneKey(active)] = v; else delete fitPicks[paneKey(active)];
+  store("tmuxrc-fit-picks", JSON.stringify(fitPicks)); paintFit(); refitNow();
+}
+const paintFit = () => choices("fit-pane", FIT_PICKS, fitPicks[paneKey(active)] || "", pickFit);
+$("pane-menu").addEventListener("toggle", () => {
+  // The fit is the terminal's, and a choice is filed under the pane's incarnation, which
+  // only state knows: offered on the terminal once the pane is in state.
+  show("fit-row", terminalVisible() && panes.some((p) => p.pane_id === active));
+  if ($("pane-menu").open) paintFit();
+});
+const setFitDefault = (v) => { fitDefault = v; store("tmuxrc-fit-default", v); paintSettings(); refitNow(); };
+$("tall-rows").onchange = (e) => {
+  tallRows = Math.max(100, Math.min(2000, Math.round(Number(e.target.value)) || 500));
+  e.target.value = tallRows; store("tmuxrc-tall-rows", tallRows); refitNow();
 };
 
 function clearCapture() { $("capture").replaceChildren(); captureLines = []; captureDirty = false; latestFrame = paintedFrame = ""; }
@@ -1179,6 +1202,10 @@ async function streamTerminal(id, signal) {
       if (signal.aborted) return;
       frame = data.frame || "";
       if (typeof data.text === "string") { latestCapture = data.text; latestFrame = frame; paintCapture(); }
+      // A full-screen app came or went: Auto picks again between tall and width only.
+      // The first word too: a fit sent before it may have judged a shell the app has since
+      // left. Queued, not left to fitDue: a reply already in flight would mark it done.
+      if ("alt" in data && data.alt !== fitAlt) { if (fitMode(id) === "auto") refitNow(); fitAlt = data.alt; }
       fitDue();
       text($("terminal-status"), "Live terminal");
       await pause(100, signal);
@@ -1661,6 +1688,8 @@ function paintSettings() {
   choices("usage-mode", WIDE.matches ? { [usageMode === "on" ? "on" : "auto"]: "On", off: "Off" } : USAGE_MODES, usageMode, setUsageMode);
   choices("sort", SORTS, sort, setSort);
   choices("pin-needs", { on: "On", off: "Off" }, pinNeeds ? "on" : "off", setPinNeeds);
+  choices("fit-default", FIT_DEFAULTS, fitDefault, setFitDefault);
+  $("tall-rows").value = tallRows;
   show("sort-row", !WIDE.matches); // wide, the filter menu's Sort by sets it
 }
 $("settings-open").onclick = () => {
