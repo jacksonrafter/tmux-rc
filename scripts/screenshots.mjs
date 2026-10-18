@@ -14,13 +14,14 @@ const HD = { width: 1920, height: 1080 };
 
 // name, viewport, colour scheme, URL hash, and an optional step before the shot.
 const SHOTS = [
-  // The front page's lead: a question answered from the Needs you list, and its pane.
+  // One-tap answers from the Needs you list, and the question's pane.
   ["one-tap-list", PHONE, "light", "", (page) => page.click("#attention-tab")],
   ["one-tap-pane", PHONE, "light", "#pane=%2548"],
   ["hero", WIDE, "light", "#pane=%259"],
   ["website-desktop", WIDE, "light", "#pane=%259"],
   ["website-chat", WIDE, "light", "#pane=%259", chat("Tell e2e triage to rerun it headed", "#voice-log .propose .open")],
   ["website-chat-phone", PHONE, "light", "", chat("Tell e2e triage to rerun it headed", "#voice-log .propose .open")],
+  ["mobile-ask", PHONE, "light", "", chat("What are my agents doing?")],
   ["website-voice", WIDE, "light", "#pane=%259", voice],
   ["website-voice-phone", PHONE, "light", "", voice],
   ["website-usage", PHONE, "light", "#view=dashboard", reach("#usage-panel"), "#usage-panel"],
@@ -31,7 +32,7 @@ const SHOTS = [
   ["wide-pane-dark", WIDE, "dark", "#pane=%259"],
   ["wide-overview-folded", WIDE, "light", "#pane=%259", (page) => page.click("#overview-toggle")],
   ["wide-overview-folded-dark", WIDE, "dark", "#pane=%259", (page) => page.click("#overview-toggle")],
-  ["wide-needs-you", WIDE, "light", "#pane=%254"],
+  ["wide-needs-you", WIDE, "light", "#pane=%2548"],
   ["wide-layout-menu", WIDE, "light", "#pane=%259", (page) => page.click("#review-layout-picker summary")],
   ["wide-dashboard", WIDE, "light", "#view=dashboard"],
   ["wide-dashboard-dark", WIDE, "dark", "#view=dashboard"],
@@ -56,11 +57,6 @@ const SHOTS = [
   ["mobile-usage-30d", PHONE, "light", "#view=usage", pickRange("30d")],
   ["mobile-heatmap", PHONE, "light", "#view=dashboard", heatCard],
   ["mobile-pane", PHONE, "light", "#pane=%259"],
-  ["mobile-needs-you", PHONE, "light", "#pane=%254"],
-  ["mobile-open-link", PHONE, "light", "#pane=%2549"],
-  ["mobile-question-items", PHONE, "light", "#pane=%2546"],
-  ["mobile-question-subject", PHONE, "light", "#pane=%2547"],
-  ["mobile-menu", PHONE, "dark", "#pane=%2540"],
   ["mobile-terminal", PHONE, "light", "#pane=%259&view=terminal"],
   ["mobile-password", PHONE, "dark", "#pane=%2529&view=terminal"],
   ["mobile-pane-menu", PHONE, "dark", "#pane=%259", (page) => page.click("#pane-menu-button")],
@@ -316,7 +312,7 @@ try {
       if (name.startsWith("website-")) await page.route("**/api/state*", async (route) => {
         try {
           const response = await route.fetch({ timeout: 0 }), data = await response.json();
-          data.panes = data.panes.filter((p) => p.waiting_on !== "user" || p.title === "api contract diff");
+          data.panes = data.panes.filter((p) => p.waiting_on !== "user" || p.title === "refunds");
           await route.fulfill({ response, json: data });
         } catch { /* page gone */ }
       });
