@@ -1,6 +1,6 @@
 import { headerPicker, dismissable } from "/m/header-picker.js";
 import { renderAtlas, renderFleet, refreshAtlasHistory, renderHeatView, detailCard, pageHead } from '/m/atlas.js';
-import { renderCaptureLines, linkifyText, besideHeld } from "/terminal.js";
+import { renderCaptureLines, linkifyText, besideHeld, keptRows } from "/terminal.js";
 import { setupLiveMode } from "/m/live.js";
 import { Composer, bindAttach, enterSubmits } from "/m/composer.js";
 import { answerBody, pickCursorRow, STALE, UNTAKEN } from "/cursor-pick.js";
@@ -169,7 +169,7 @@ const pendingAnswers = new Map();
 // to it (_html). Set when a frame was held back for a selection, so selectionchange
 // knows there is something to catch up on.
 let captureLines = [], captureDirty = false;
-let latestFrame = "", paintedFrame = "";
+let latestFrame = "", paintedFrame = "", shown = { kept: [], count: 0 }; // the painted frame's rows (frameLines)
 // Earlier history (docs/design/live-view.md): tmux rows above the live frame, fetched as you
 // near the top and kept, since a history row never changes. Rows are counted from the
 // oldest one tmux keeps, so new output (which only adds rows below) never renumbers a row
@@ -1202,7 +1202,13 @@ function paintLines(lines) {
   });
   captureLines.splice(lines.length).forEach((node) => node.remove());
 }
-const frameLines = () => lineMarkup(renderCaptureLines(latestCapture, { color: true }));
+// A full-screen app's blank runs squeezed (keptRows): `kept` says which of the capture's
+// `count` rows each line is, which a click counts in. Only there: its frame is the whole
+// screen (capture_live), so no row of it ever lands in #earlier, which shows rows as they are.
+function frameLines() {
+  const all = renderCaptureLines(latestCapture, { color: true }), kept = fitAlt ? keptRows(all) : [...all.keys()];
+  return Object.assign(lineMarkup(kept.map((i) => all[i])), { kept, count: all.length });
+}
 const selectionHolds = (lines) => { const s = getSelection(); return !!s && !s.isCollapsed && selectionDirty(s, lines); };
 function paintCapture(force = false) {
   // A reflow (new width) or a switch of screen renumbers every row, and trimmed or cleared
@@ -1224,7 +1230,7 @@ function paintCapture(force = false) {
   if (earlier.top === earlier.end && !earlier.busy && follow) earlier.top = earlier.end = top;
   if (!follow && !force && earlier.end < top && !backingOff()) { loadEarlier(); return; }
   paintLines(lines);
-  paintedFrame = latestFrame; shownTop = top;
+  paintedFrame = latestFrame; shownTop = top; shown = lines;
   if (follow) scroll.scrollTop = scroll.scrollHeight;
   loadEarlier();
 }
@@ -1364,11 +1370,12 @@ async function streamTerminal(id, signal) {
       const data = await request(`${paneUrl(id, "live")}?${query}`, { signal }, LONG_POLL_TIMEOUT_MS);
       if (signal.aborted) return;
       frame = data.frame || "";
-      if (typeof data.text === "string") { latestCapture = data.text; latestFrame = frame; latestGeometry = [data.top, data.screen]; paintCapture(); }
       // A full-screen app came or went: Auto picks again between tall and width only.
       // The first word too: a fit sent before it may have judged a shell the app has since
       // left. Queued, not left to fitDue: a reply already in flight would mark it done.
+      // Before the frame: a full-screen app's is drawn squeezed (frameLines).
       if ("alt" in data && data.alt !== fitAlt) { if (fitMode(id) === "auto") refitNow(); fitAlt = data.alt; }
+      if (typeof data.text === "string") { latestCapture = data.text; latestFrame = frame; latestGeometry = [data.top, data.screen]; paintCapture(); }
       fitDue();
       text($("terminal-status"), "Live terminal");
       await pause(100, signal);
@@ -2138,7 +2145,7 @@ $("capture").onclick = (event) => {
   const row = Math.floor((event.clientY - top) / ((box.bottom - parseFloat(style.paddingBottom) - top) / captureLines.length));
   const col = Math.floor((event.clientX - box.left - parseFloat(style.paddingLeft)) / cell) + 1;
   if (row < 0 || row >= captureLines.length || col < 1) return;
-  const body = { from_bottom: captureLines.length - 1 - row, col, frame: paintedFrame }, id = active;
+  const body = { from_bottom: shown.count - 1 - shown.kept[row], col, frame: paintedFrame }, id = active;
   // A tap that lands on nothing answers sent:false, not an error; a failure is a gone or
   // replaced pane, and it drops any keys queued behind it, so it has to say so.
   paneInput.run(id, () => post(paneUrl(id, "click"), body)).catch(() => notice("The click could not be delivered. Check the terminal before typing on."));
