@@ -26,6 +26,7 @@ from .classify import (
     _OPENCODE_RUNNING_RE,
     bootstrap,
     classify,
+    prompt_gone,
     question_rows,
     screen_offers,
 )
@@ -1652,6 +1653,11 @@ class Watcher:
             if known_replacement:
                 state.update(tool=replacement_tool, identity_tool=replacement_tool,
                              agent_title=None, agent_title_tool=None)
+            # Its question too, once no words on a screen that held through every retry
+            # ask it (not a frame caught mid-repaint): answered and replaced (a
+            # multi-question dialog's next tab), so its buttons would answer the new ask.
+            if retired and prompt_gone(text, self._question_prompt(state) or ""):
+                state.update(question=None, activity="unknown", waiting_on=None)
         state.pop("parse_ok", None)
         state["prs"] = list(self._prs.get(pane.id, []))
 
