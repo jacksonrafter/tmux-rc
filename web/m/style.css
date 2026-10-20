@@ -57,7 +57,7 @@ h2 { font-size: 16px; line-height: 1.5; font-weight: 600; }
 #connection.online::before { background: var(--accent); }
 /* The status is a dot (the word stays in the node, still read out): on the wide sidebar's
    logo, on a phone's ☰, and in a pane, where there is no ☰, on its Back. */
-#app > #connection { position: absolute; opacity: 0; pointer-events: none; }
+#app > :is(#connection, #copied) { position: absolute; opacity: 0; pointer-events: none; }
 :is(#sb-head #brand, #menu-open, #back, #dash-page [data-key="page-back"]) { position: relative; }
 :is(#sb-head #brand, #menu-open, #back, #dash-page [data-key="page-back"])::before { content: ""; position: absolute; width: 8px; height: 8px; border-radius: 50%; background: var(--amber); }
 #app:has(#connection.online) :is(#sb-head #brand, #menu-open, #back, #dash-page [data-key="page-back"])::before { background: var(--accent); }
@@ -258,7 +258,13 @@ a.icon-button { color: var(--fg); text-decoration: none; }
 :is(#capture, #earlier) a { color: #8ecbff; }
 #capture.clicks { cursor: default; user-select: none; -webkit-user-select: none; }
 #session-summary { margin-top: 12px; font-size: 14px; line-height: 1.5; white-space: pre-wrap; }
-#links a, #ask-link a { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; align-items: center; min-height: 52px; padding: 8px 0; border-bottom: 1px solid var(--line); text-decoration: none; }
+/* A card's link chip and its Copy link button (app.js linkPair). A long press on the link
+   opens the system's link menu rather than selecting its words. */
+.link-pair { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; }
+.link-pair a { min-width: 0; user-select: none; -webkit-user-select: none; }
+.link-copy { color: var(--muted); }
+/* A pane's link rows: a long press copies (app.js renderLinks), so no callout or selection. */
+#links a, #ask-link a { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; align-items: center; min-height: 52px; padding: 8px 0; border-bottom: 1px solid var(--line); text-decoration: none; -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
 #links a:last-child { border-bottom: 0; }
 #links a span, #links a small, #ask-link a span, #ask-link a small { overflow-wrap: anywhere; }
 #links a small, #ask-link a small { color: var(--muted); font-size: 12px; grid-column: 1; }
@@ -697,8 +703,10 @@ dialog.beside .dialog-heading { min-height: var(--bar); }
 .sb-icon { width: 32px; height: 32px; min-height: 32px; padding: 0; flex: none; display: inline-flex; align-items: center; justify-content: center; color: var(--muted); }
 .sb-icon[aria-pressed="true"] { color: var(--accent); background: var(--accent-bg); }
 .sb-replies:not(:empty), .sb-compose { display: flex; flex-wrap: wrap; gap: 5px; padding: 0 10px 8px 41px; }
-.sb-replies button { min-height: 28px; max-width: 100%; padding: 0 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); font-size: 12px; font-weight: 600; }
-.sb-replies button:not(:disabled):hover { border-color: var(--amber); }
+.sb-replies :is(button, a) { min-height: 28px; max-width: 100%; padding: 0 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); font-size: 12px; font-weight: 600; }
+.sb-replies :is(button, a):not(:disabled):hover { border-color: var(--amber); }
+.sb-replies a { display: inline-flex; align-items: center; color: var(--fg); text-decoration: none; }
+.sb-replies .link-copy { width: 28px; height: 28px; padding: 0; }
 .sb-offer { flex-basis: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font: 12px/1.35 var(--mono); }
 .sb-note { align-self: center; color: var(--muted); font-size: 12px; }
 .sb-compose { flex-wrap: nowrap; align-items: flex-end; gap: 2px; }
@@ -967,7 +975,8 @@ label:has([value="auto"]) > .thumb { border-style: dashed; }
   .pane-card { border-bottom: 1px solid var(--line); }
   .pane-card .row-body { border-bottom-color: transparent; }
   .pane-card .sb-replies:not(:empty), .pane-card .sb-compose { gap: 8px; padding: 0 16px 12px 84px; }
-  .pane-card .sb-replies button { min-height: 40px; padding: 0 14px; border-radius: 20px; font-size: 14px; }
+  .pane-card .sb-replies :is(button, a) { min-height: 40px; padding: 0 14px; border-radius: 20px; font-size: 14px; }
+  .pane-card .sb-replies .link-copy { width: 40px; height: 40px; padding: 0; }
   .pane-card .sb-icon { width: 40px; height: 40px; min-height: 40px; }
   .pane-card #side-reply { min-height: 40px; padding: 9px 12px; border-radius: 20px; font-size: 16px; line-height: 20px; } /* 16px: iOS zooms a smaller field */
   /* The list and the dashboard end clear of the tab bar. */
