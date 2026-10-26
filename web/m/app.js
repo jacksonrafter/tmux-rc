@@ -2398,7 +2398,7 @@ function placeChrome() {
 // in it, which a view's rebuild keeps (atlas.js renderHeatView), so neither loses focus.
 function placePill() {
   const phone = !WIDE.matches, bar = phone && $("dash-page").querySelector(":scope > .landing-head");
-  const head = bar && CARDS[page], dash = phone && dashboard;
+  const head = CARDS[page] && bar, dash = phone && dashboard;
   const picker = renderSidebar.picker, at = head ? picker : bar ? $("find") : dash ? document.querySelector(".app-header") : $("find");
   if (head) { if (picker.parentElement !== head) head.append(picker); }
   else if (dash && picker.nextElementSibling !== $("new-window")) $("new-window").before(picker);
