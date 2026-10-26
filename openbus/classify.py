@@ -150,13 +150,15 @@ def _tabbed_panel_open(visible: str) -> bool:
 # ahead of a value column ("Auto-compact      true"). Only a row that opens with a frame
 # loses one closing bar: a label's own bar is content.
 _HIGHLIGHT_RE = re.compile(
-    rf"^[ \t]*(?P<frame>│)?[ \t│]*[{PROMPT_GLYPHS}>][ \t]*(?:[○●◉◯✔✓✘][ \t]*)?(?:\d+[.)][ \t]+)?"
-    r"(?P<label>.*?)(?(frame)[ \t]*[│┃╎])[ \t]*$", re.MULTILINE)
+    rf"^[ \t]*(?P<frame>│)?[ \t│]*[{PROMPT_GLYPHS}>][ \t]*(?:[○●◉◯✔✓✘][ \t]*)?"
+    r"(?P<digit>\d+[.)][ \t]+)?(?P<label>.*?)(?(frame)[ \t]*[│┃╎])[ \t]*$", re.MULTILINE)
 # A picker heading's live count ("Resume session (1 of 47)"): it redraws with every move
 # and filter while the picker stays the same, so it is never part of the prompt.
 _LIVE_COUNT = r"\(\d+ of \d+\)"
 _LIVE_COUNT_RE = re.compile(rf"\s*{_LIVE_COUNT}\s*$")
 _WIDGET_END_RE = re.compile(r"^\s*(?:(?P<rule>[─━]{3,})|╰)", re.MULTILINE)
+# A picker footer advertising its search box, where a typed key filters.
+_SEARCH_FOOTER_RE = re.compile(r"(?:^|[·│])\s*Type to search(?:\s*[·│]|$)", re.IGNORECASE)
 # Codex's compact key-hint footer, led by its commit key: "enter continue · esc back".
 _ENTER_FOOTER_RE = re.compile(r"\s*(?:enter \w+ · |↑/↓ Navigate · enter (?:Select|Confirm))")
 
@@ -769,7 +771,11 @@ def question_rows(question: dict, text: str) -> str:
         return ""  # only a menu's digit needs it; any other question keeps the whole frame
     under = re.match(rf"(?:\n[ \t│┃]{{{len(end[-1][1]) + 1},}}\S.*)*", visible[end[-1].end():])
     rows = visible[:end[-1].end() + under.end()]
-    top = list(re.finditer(r"^(?:[─━▔]{3,}|╭)", rows, re.MULTILINE))
+    # The edge above its first option: Claude's AskUserQuestion also rules off its last row
+    # ("5. Chat about this"), and from there down is no question or options at all.
+    first = [m.start() for m in _FIRST_OPTION_RE.finditer(rows)]
+    head = rows[:first[-1]] if first else rows
+    top = list(re.finditer(r"^(?:[─━▔]{3,}|╭)", head, re.MULTILINE))
     return rows[top[-1].start():] if top else rows
 
 
@@ -1356,6 +1362,18 @@ def classify(
         if result.pop("parse_ok", True) is False or result.get("activity") != "running":
             result["activity"] = "idle"
     question = result.get("question")
+    footer = visible.rstrip().splitlines()[-3:]
+    search = any(map(_SEARCH_FOOTER_RE.search, footer))
+    # Digits win (the parser prompt): a highlighted row drawn behind its digit ("❯ 1. Yes")
+    # is a menu, whose digit commits any row in one key, however the model styled it. A
+    # walk needs its prompt found as a row, which a question wrapped into a paragraph is not.
+    # Not where the footer sends a digit elsewhere: into a search box, or (Codex's
+    # arrow-only footer) to a mere move.
+    if (isinstance(question, dict) and question.get("answer_style") == "cursor"
+            and not search and not any(map(_ENTER_FOOTER_RE.match, footer))
+            and (row := next(reversed(list(_HIGHLIGHT_RE.finditer(visible))), None))
+            and row["digit"]):
+        question["answer_style"] = "menu"
     # A numbered picker driven by arrows is walked, not answered with a digit, where the
     # screen shows its highlighted row, which a walk needs.
     if (isinstance(question, dict) and question.get("answer_style") == "menu"
@@ -1365,10 +1383,7 @@ def classify(
     # A cursor picker's advertised search binding is evidence, not a model guess.
     if isinstance(question, dict) and question.get("answer_style") == "cursor":
         keymap = question.get("keymap")
-        footer = visible.splitlines()[-3:]
-        if isinstance(keymap, dict) and any(re.search(
-            r"(?:^|[·│])\s*Type to search(?:\s*[·│]|$)", line, re.IGNORECASE,
-        ) for line in footer):
+        if isinstance(keymap, dict) and search:
             keymap["search"] = True
         rows, asked = question.get("options"), _question_prompt(question)
         if asked:  # the walk and /send hold the prompt across moves, which redraw the count
