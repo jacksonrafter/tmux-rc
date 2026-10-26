@@ -63,8 +63,9 @@ export function setupAccounts({ request, post, licon, notice, repaint, navigate,
   const several = (provider) => signedIn().filter((p) => p.provider === provider).length > 1;
   const any = () => Object.keys(ENV).some(several);
   const byDir = (dir) => profiles.find((p) => p.dir === dir);
+  const owning = (id) => profiles.find((a) => a.panes.includes(id));
   // The account worth naming for a pane: only when its provider has several.
-  const ofPane = (id) => { const p = profiles.find((a) => a.panes.includes(id)); return p && several(p.provider) ? p : null; };
+  const ofPane = (id) => { const p = owning(id); return p && several(p.provider) ? p : null; };
   // The URL's name for an account: its dir, which is unique and outlives a rename, with the
   // usual "~/." dropped so it reads (acct=claude-work). Every other dir keeps its leading
   // "~" or "/", so no two dirs share a name.
@@ -455,7 +456,7 @@ export function setupAccounts({ request, post, licon, notice, repaint, navigate,
     sessionBadge: (session) => Object.keys(ENV).filter((pr) => several(pr) && set(session, pr) && defaults[session][pr] !== defaults[""]?.[pr]).map((pr) => defaultOf(session, pr)).filter(Boolean).map((p) => badge(p)).join(""),
     // The consent card: which account a chat action lands on.
     consent: (paneId) => { const p = ofPane(paneId); return p ? `<small class="voice-meta acct-on">on ${badge(p)}</small>` : ""; },
-    profile: byDir, list: () => profiles, chip: (p) => badge(p),
+    profile: byDir, list: () => profiles, chip: (p) => badge(p), owner: owning, // the Fleet graph's Account lens
     // A browser Codex sign-in window's own card (one this daemon opened, by the server's
     // word): the same paste field as the sheet's waiting step. Drawn once per pane, so a
     // poll never wipes what is being typed.

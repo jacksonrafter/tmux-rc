@@ -4,7 +4,8 @@
 // or, with no pane, `#view=dashboard`, or one of PAGES: a dashboard card's own view (`#view=heat`, `#view=loops`). A hash (not a path) because the daemon serves /m and
 // nothing under it, and because the installed PWA's start_url stays the plain list. Unknown
 // fields (push's `from=push`) are ignored on read and dropped on write; `compose=1` is
-// read-only, set by push links to focus the reply box. `filter`, `acct` and `agent` are lists (a
+// read-only, set by push links to focus the reply box, and so is `open`, a scratch page a
+// "Ready" push opens in the Scratch view's viewer. `filter`, `acct` and `agent` are lists (a
 // pane shows if it matches any state, any account and any agent; empty is all), comma-separated, so an old
 // single-value link reads as a list of one. The sort is a per-browser preference, not here.
 //
@@ -13,7 +14,7 @@
 
 const FILTERS = ["attention", "working", "finished", "idle"]; // the list's sections, in its order
 const OLD = { running: "working", recent: "finished", waiting: "attention" }; // earlier links' names
-export const PAGES = ["heat", "usage", "loops", "restore", "scratch"]; // the dashboard's cards that open their own view
+export const PAGES = ["heat", "usage", "loops", "restore", "scratch", "graph"]; // the dashboard's cards that open their own view
 
 // `tab` is the view a pane opens on when the hash names none: the wide Layout picker's choice.
 export function parseHash(hash, tab = "summary") {
@@ -37,6 +38,7 @@ export function parseHash(hash, tab = "summary") {
     agent: list(lists, "agent"), // the agent filter (a pane's tool), the list's and the dashboard's alike
     q: params.get("q")?.trim() || "", // the list's search box
     compose: params.get("compose") === "1",
+    open: params.get("open"),
   };
 }
 

@@ -1,5 +1,7 @@
 import json
+import os
 import queue
+import shutil
 import subprocess
 import threading
 from pathlib import Path
@@ -839,8 +841,27 @@ def test_send_ignores_output_streaming_above_the_menu_s_edge(monkeypatch, _scree
     yes_no = {**menu, "options": ["Yes", "No"]}
     more = codex + "  3. Always\n"
     assert question_rows(yes_no, more) != question_rows(yes_no, codex)
+    # A rule under the options (AskUserQuestion's) is no edge: the question stays in.
+    ask = f"{'─' * 9}\n Pick one?\n❯ 1. A\n  2. B\n{'─' * 9}\n  3. Chat about this\n"
+    assert question_rows({**menu, "options": ["A", "B"]}, ask) == ask.rstrip("\n")
     below = f"  1. A\n  2. B\n  3. C\n{codex}"
     assert question_rows({**menu, "options": ["A", "B", "C"]}, below).endswith("2. No")
+
+
+def test_send_refuses_a_digit_once_the_next_ask_user_question_is_up(monkeypatch, _screen):
+    """AskUserQuestion rules off its last row, which reads the same in every picker: a
+    digit tapped on the old card must not answer the question that replaced it."""
+    def ask(question, a, b):
+        return (f"{'─' * 9}\n {question}\n❯ 1. {a}\n  2. {b}\n{'─' * 9}\n"
+                "  3. Chat about this\n\nEnter to select · Esc to cancel\n")
+
+    question = {"prompt": "Keep the cache?", "answer_style": "menu", "options": ["Yes", "No"]}
+    watcher = Watcher()
+    watcher.states = [waiting(question, ask("Keep the cache?", "Yes", "No"))]
+    _screen[0] = ask("Delete the backups?", "Delete", "Keep")  # answered at the desk
+    tap, token, sent = _send_app(monkeypatch, watcher)
+    assert tap(token()).status_code == 409
+    assert sent == []
 
 
 def test_send_binds_option_rows_and_the_snapshot_s_own_birth(monkeypatch, _screen):
@@ -923,3 +944,97 @@ def test_a_pane_gone_at_the_claim_refuses_it_as_changed(tmp_path, monkeypatch):
     monkeypatch.setattr(push.tmux, "capture_pane", gone)
     with pytest.raises(ValueError, match="pane has changed"):
         service.answer(sender.payloads[0]["nonce"], 0)
+
+
+def test_a_page_being_made_notifies_once_as_it_lands(tmp_path, monkeypatch):
+    clock, watcher, root = [100.0], Watcher(), tmp_path / "scratch"
+    (root / "wip").mkdir(parents=True)
+    (root / "wip" / "meta.json").write_text('{"title": "Mock", "pane": "%1"}')
+    (root / "once").mkdir()  # published in one go: never promised, never notified
+    service, sender = manager(tmp_path, watcher, clock)
+    service.scratch, shot = root, []
+    service.shoot = shot.append  # its thumbnail, for the gallery's spinner to turn into
+    service.store.upsert(subscription())
+    monkeypatch.setattr(push.tmux, "client_active_within", lambda _seconds: False)
+    monkeypatch.setattr(push.scratch, "made_in", lambda _pane, _created: True)
+    watcher.states = [{**waiting(), "activity": "running", "tool": "claude", "session": "dev",
+                       "window_name": "ui"}]
+
+    def scan(write, mtime):
+        for name, file in write:
+            (root / name / file).write_text("page")
+            os.utime(root / name, (mtime, mtime))
+        clock[0] += 1
+        service.landed()
+
+    service.landed()
+    scan([("wip", "app.css")], 150)  # an asset ahead of its index: not the page yet
+    sender.available = False  # a full queue: tried again at the next scan
+    scan([("wip", "index.html"), ("once", "index.html")], 200)
+    assert sender.payloads == []
+    sender.available = True
+    scan([], 0)
+    scan([], 0)
+    assert [(p["title"], p["body"], p["tag"], p["url"], p["renotify"])
+            for p in sender.payloads] == [(
+        "Ready: Mock", "claude finished it in dev:ui", "block:%1",
+        "/m#view=scratch&open=%2Fscratch%2Fwip%2F", True)]
+    assert [i["name"] for i in shot] == ["wip"]
+    # The turn ends and the pane waits on the user: its plain Needs-you is the same news...
+    watcher.states = [waiting()]
+    for _ in range(2):
+        service.evaluate()
+        clock[0] += push.SETTLE_SECONDS
+    assert len(sender.payloads) == 1
+    # ...but any question still gets through, free text or with answers, under the same tag.
+    for question in ({"prompt": "Which name?"}, held()):
+        watcher.states = [waiting(question)]
+        for _ in range(2):
+            service.evaluate()
+            clock[0] += push.SETTLE_SECONDS
+    assert [p["tag"] for p in sender.payloads[1:]] == ["block:%1"] * 2
+    # A page landing while that question's buttons are out keeps out of their way.
+    # Its assets were already landing as the scan first saw it (a restart mid-build).
+    (root / "two").mkdir()
+    (root / "two" / "meta.json").write_text('{"title": "Two", "pane": "%1"}')
+    (root / "two" / "app.css").write_text("")
+    service._mtimes = {}
+    scan([], 0)
+    scan([("two", "index.html")], 300)
+    assert sender.payloads[-1]["tag"] == "scratch:two"
+    # Another pane given the same id after a tmux restart keeps its own Needs-you.
+    service._ready = {("%1", "an earlier pane"): clock[0]}
+    watcher.states = []
+    service.evaluate()
+    watcher.states = [waiting()]
+    for _ in range(2):
+        service.evaluate()
+        clock[0] += push.SETTLE_SECONDS
+    assert sender.payloads[-1]["tag"] == "block:%1" and sender.payloads[-1]["actions"] == []
+
+
+def test_a_meta_json_caught_half_written_is_read_again(tmp_path, monkeypatch):
+    """Finishing meta.json in place leaves its folder's mtime alone: the scan retries, with
+    an asset already there (a loose file then, not a page being made) or not."""
+    root = tmp_path / "scratch"
+    (root / "wip").mkdir(parents=True)
+    (root / "wip" / "app.css").write_text("")
+    (root / "wip" / "meta.json").write_text('{"title": "Mo')
+    service, sender = manager(tmp_path, Watcher(), [100.0])
+    service.scratch, service.shoot = root, lambda _item: None
+    service.store.upsert(subscription())
+    monkeypatch.setattr(push.tmux, "client_active_within", lambda _seconds: False)
+    service.landed()
+    (root / "wip" / "meta.json").write_text('{"title": "Mock", "pane": "%1"}')
+    service.landed()
+    service.landed()
+    (root / "wip" / "index.html").write_text("page")
+    service.landed()
+    assert [p["title"] for p in sender.payloads] == ["Ready: Mock"]
+    (root / "gone").mkdir()  # removed while pending: forgotten
+    (root / "gone" / "meta.json").write_text('{"title": "Gone"}')
+    service.landed()
+    assert {name for name, _ in service._waiting} == {"gone"}
+    shutil.rmtree(root / "gone")
+    service.landed()
+    assert service._waiting == set()

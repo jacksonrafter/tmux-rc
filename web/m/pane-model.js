@@ -2,6 +2,8 @@ import { parseHash } from "./url-state.js";
 // Pure pane predicates for the mobile UI: no DOM, no clock of their own (time is injected),
 // so tests/test_mobile_pane_model.py can run them under node against fixture panes.
 
+// A path under a home directory, as ~/…
+export const home = (d) => d.replace(/^\/home\/[^/]+/, "~");
 // Markup-escaped text, for every module that builds HTML from strings.
 export const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
 // An idle pane older than this is parked, so it drops out of "Recent".
@@ -146,7 +148,10 @@ export const oneSession = () => solo !== null;
 export const sessionOf = (pane) => pane?.session === solo ? "" : pane?.session || "";
 // What a question decides, then the list rows it names ("do 1 now?", "A or B?"), one per
 // line, so it reads alone.
-export const questionItems = (question) => Array.isArray(question?.items) ? [question.subject, ...question.items].filter(Boolean).join("\n") : "";
+// `said`: answer labels on buttons beside it, whose rows (numbered or not) it leaves to them.
+const bare = (row) => String(row).trim().replace(/^\(?\w{1,2}[.)]\s+/, "");
+export const questionItems = (question, said = []) => Array.isArray(question?.items)
+  ? [question.subject, ...question.items.filter((row) => !said.some((label) => bare(label) === bare(row)))].filter(Boolean).join("\n") : "";
 // The line a list shows under the name: the question it is stuck on, else what it is doing,
 // else the headline (a daemon restart regenerates session_summary lazily).
 // A held widget's question reads as its plain restatement (`ask`, classify._restate): a bare

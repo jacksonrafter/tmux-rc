@@ -17,6 +17,7 @@ import { renderUsageView, usageDays } from "/m/usage-view.js";
 import { setupAccounts } from "/m/accounts.js";
 import { renderLoops, renderLoopsCard } from "/m/loops.js";
 import { setupRestore } from "/m/restore.js";
+import { renderGraphView, renderGraphCard } from "/m/graph.js";
 
 const refreshViewPicker = headerPicker(document.getElementById("review-layout"));
 
@@ -67,6 +68,7 @@ const LUCIDE = {
   bell: '<path d="M10.3 21h3.4M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/>',
   mic: '<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/>',
   message: '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>',
+  copy: '<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
   clipboard: '<rect width="8" height="4" x="8" y="2" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>',
   paperclip: '<path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>',
   keyboard: '<rect width="20" height="12" x="2" y="6" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h.01M18 14h.01M9 14h6"/>',
@@ -91,6 +93,11 @@ const LUCIDE = {
   eye: '<path d="M2.06 12.35a1 1 0 0 1 0-.7 10.75 10.75 0 0 1 19.88 0 1 1 0 0 1 0 .7 10.75 10.75 0 0 1-19.88 0"/><circle cx="12" cy="12" r="3"/>',
   eyeOff: '<path d="M10.73 5.08a10.74 10.74 0 0 1 11.2 6.57 1 1 0 0 1 0 .7 10.75 10.75 0 0 1-1.44 2.49M14.08 14.16a3 3 0 0 1-4.24-4.24M17.48 17.5a10.75 10.75 0 0 1-15.42-5.15 1 1 0 0 1 0-.7 10.75 10.75 0 0 1 4.45-5.14M2 2l20 20"/>',
   settings: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
+  locate: '<path d="M2 12h3M19 12h3M12 2v3M12 19v3"/><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="3"/>',
+  maximize: '<path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>',
+  minimize: '<path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/>',
+  network: '<rect x="16" y="16" width="6" height="6" rx="1"/><rect x="2" y="16" width="6" height="6" rx="1"/><rect x="9" y="2" width="6" height="6" rx="1"/><path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3M12 12V8"/>',
+  fileText: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4M10 9H8M16 13H8M16 17H8"/>',
   bot: '<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2M20 14h2M15 13v2M9 13v2"/>',
 };
 const licon = (name, size = 20) => `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${LUCIDE[name]}</svg>`;
@@ -143,7 +150,7 @@ const drafts = new Map();
 // page: a dashboard card's own view (url-state.js PAGES), which replaces the page; leaving
 // it lands on its card (CARDS).
 let dashboard = false, page = null;
-const CARDS = { heat: "heat-card", usage: "usage-panel", loops: "loops-card" };
+const CARDS = { heat: "heat-card", usage: "usage-panel", loops: "loops-card", graph: "graph-card" };
 const dashboardVisible = () => !active && (WIDE.matches || dashboard);
 let panes = [], statePanes = [], paneIds = null, accountsAt = 0, active = null, view = "summary", filter = [], loaded = false, booted = false, tmuxRunning = true;
 let focusPushComposer = false;
@@ -341,6 +348,8 @@ function route() {
   if (accounts.follow(state.acct)) paintUsage(); // the strip and meters are filtered too
   if (page !== wasPage) { $("dash-page").replaceChildren(); $("dash-page")._signature = null; } // each view builds afresh
   if (viewer.open && page !== "scratch") viewer.close(); // Back, a push or Safari's swipe left Scratch: its viewer goes too
+  const opening = page === "scratch" && scratchUrl(state.open, location.href); // a "Ready" push's page, opened once
+  if (opening) { history.replaceState(null, "", "#" + formatHash(state)); viewScratch(opening, ""); }
   if (changed) {
     if (active) $("reply").replaceWith(draft().editor);
     $("secret").value = ""; // a password is for the pane it was typed at
@@ -371,7 +380,9 @@ function route() {
       else if (stillOnPane(location.hash, id)) notice("Could not focus this pane on the host.");
     });
   }
-  if (changed && active) $("pane-title").focus({ preventScroll: true }); // land in the pane, on its name: focusing Back painted its ring on open
+  // Land in the pane, on its name (focusing Back painted its ring on open), or on the terminal
+  // when a phone shows that and the name is out of sight in the hidden overview.
+  if (changed && active) ($("pane-title").getClientRects().length ? $("pane-title") : $("terminal-scroll")).focus({ preventScroll: true, focusVisible: false });
 }
 
 function makeRow(pane) {
@@ -404,7 +415,7 @@ function updateRow(button, pane) {
   text(button.querySelector(".row-details"), [pane.tool, pane.model, pane.window_index !== "" && pane.window_index != null ? `Window ${pane.window_index}` : ""].filter(Boolean).join(" / "));
 }
 const renderSidebar = setupSidebar({ licon, reconcile, text, html, renderItems, logos: LOGOS, navigate, notice, badge: accounts.badge,
-  active: () => active, wide: () => WIDE.matches, sending: () => sending, answers: answerOptions, answered: isAnswered, picked, asks, badgeOf, answer, compose, offers: offersOf, copy: copyText,
+  active: () => active, wide: () => WIDE.matches, sending: () => sending, answers: answerOptions, answered: isAnswered, picked, asks, badgeOf, answer, compose, offers: offersOf, copy: copyText, linkPair,
   setFilter: (value) => { filter = value; stayPut(); }, setAgents: scope.pick,
   setSession: scope.pickSession, clearAll: clearFilters, outside: (p) => outside.has(p.pane_id), sort: () => sort, setSort, repaint: () => renderList() });
 function emptyMessage(query) {
@@ -435,7 +446,7 @@ function renderList() {
   const inline = renderSidebar.drafts.get(active);
   if (inline) { draft().append(inline); inline.editor.remove(); renderSidebar.drafts.delete(active); }
   renderSidebar.answers.prune(subset);
-  if (WIDE.matches) { renderSidebar(subset, query, filter, more); placeRail(); } else { $("app").classList.remove("rail"); placePill(); renderSidebar.marks(filter, more); renderPhoneList(subset); } // a folded sidebar's class would hide the chips
+  if (WIDE.matches) { renderSidebar(subset, query, filter, more); placeRail(); } else { $("app").classList.remove("rail"); placePill(); renderSidebar.marks(filter, more); renderPhoneList(subset, query); } // a folded sidebar's class would hide the chips
   show("empty", !subset.length);
   text($("empty"), emptyMessage(query));
   // Empty, while panes the filter hides need you: say so, a click from them.
@@ -453,8 +464,8 @@ function renderList() {
   $("list-nav").querySelectorAll("[data-filter]").forEach((button) => button.setAttribute("aria-pressed", !dashboard && tab === button.dataset.filter));
   // Restore rides the dashboard's view machinery but is its own screen: its row is the one pressed.
   $("dashboard-tab").setAttribute("aria-pressed", String(dashboard && page !== "restore"));
-  $("dash-nav").setAttribute("aria-pressed", String(dashboardVisible() && !["restore", "scratch"].includes(page)));
-  $("scratch-nav").setAttribute("aria-pressed", String(page === "scratch"));
+  $("dash-nav").setAttribute("aria-pressed", String(dashboardVisible() && !["restore", "scratch", "graph"].includes(page)));
+  for (const nav of ["scratch", "graph"]) $(`${nav}-nav`).setAttribute("aria-pressed", String(page === nav));
   $("restore").setAttribute("aria-pressed", String(page === "restore"));
   // The filter button counts each filter on, and its tooltip names them.
   const on = [filter.map((f) => SHOW[f]).join(", "), scope.tools.join(", "), accounts.on().join(", "), scope.session, $("search").value.trim() && `"${$("search").value.trim()}"`].filter(Boolean);
@@ -472,12 +483,13 @@ function renderList() {
 }
 // Needs-you rows are cards answerable in place (the sidebar's answers and Reply), left in their
 // sorted place: pinning them on top shoved the list around whenever a pane started asking.
-function renderPhoneList(subset) {
+function renderPhoneList(subset, query) {
   const rows = sort === "updated" ? subset.sort(newestFirst) : oneSession() ? subset
     // Sessions as the watcher lists them: tmux's own order.
     : [...new Set(subset.map((p) => p.session))].flatMap((session) => [{ heading: session || "Session", key: `session:${session}` }, ...subset.filter((p) => p.session === session)]);
   // A card for answers to tap: a question's, or a finished turn's offers.
-  const carded = (p) => needsYou(p) || offersOf(p).length > 0;
+  // Searching, a Needs-you pane the search misses is a row, as in the sidebar.
+  const carded = (p) => !(query && outside.has(p.pane_id)) && (needsYou(p) || offersOf(p).length > 0);
   reconcile($("pane-list"), rows, (p) => p.heading ? p.key : carded(p) ? `ask:${p.pane_id}` : p.pane_id, (p) => {
     if (p.heading) { const node = document.createElement("h2"); node.className = "session-label"; return node; }
     if (!carded(p)) return makeRow(p);
@@ -510,6 +522,7 @@ const renderLanding = steady(() => {
   if (page === "usage") return paintUsage();
   if (page === "scratch") return scratchPage();
   if (page === "loops") return renderLoops(cardView("Open loops", loopsView), accounts.loops(loops), navigate, licon);
+  if (page === "graph") return renderGraphView(cardView("Fleet graph", graphView), panes.filter(accounts.matches), graphCtx); // the account filter scopes it, as the atlas
   paintUsage(); // follows the tool chips
   // With panes, the atlas speaks for itself (its filter row is labelled); the heading is
   // only for the loading and empty states, and hides itself when blank (style.css).
@@ -525,6 +538,7 @@ const renderLanding = steady(() => {
     $("sessions").scrollTop = $("sb-scroll").scrollTop = $("side-list").scrollTop = 0;
   }, licon, [$("landing-cards")], $("heat-card"), () => openPage("heat"), $("radar-card"), accounts.sessionBadge);
   renderLoopsCard($("loops-card"), accounts.loops(loops), openLane, licon);
+  renderGraphCard($("graph-card"), panes.filter(accounts.matches), graphCtx);
 });
 
 // Drag the seam between the sidebar and the main column. Width is a CSS variable the
@@ -644,6 +658,8 @@ const detailResize = new ResizeObserver(() => {
 detailResize.observe($("detail"));
 detailResize.observe($("composer"));
 detailResize.observe($("heading"));
+// Out of sight: scrolled off the top, or the terminal showing instead (style.css draws it in the bar).
+new IntersectionObserver(([e]) => $("detail").toggleAttribute("data-title-away", !e.isIntersecting), { root: $("overview") }).observe($("pane-title"));
 $("mobile-view-toggle").addEventListener("click", (event) => {
   const button = event.target.closest("button[data-view]");
   if (!button) return;
@@ -779,6 +795,10 @@ const loopsView = document.createElement("section");
 loopsView.id = "landing-loops";
 loopsView.ariaLabel = "Open loops";
 detailCard($("loops-card"), "Open loops", "", () => openPage("loops"));
+// The Fleet graph (graph.js): the card's at a glance, the view's to pan, zoom and regroup.
+const graphView = Object.assign(document.createElement("section"), { className: "fg-view", ariaLabel: "Fleet graph" });
+const graphCtx = { icon: licon, logos: LOGOS, open: (id) => navigate(id), owner: accounts.owner, several: accounts.any };
+detailCard($("graph-card"), "Fleet graph", "", () => openPage("graph"));
 // A lane's count on the card opens the view at that lane, unfolded.
 function openLane(lane) {
   openPage("loops");
@@ -797,12 +817,14 @@ let scratchView = "grid";
 try { scratchView = localStorage.getItem("tmuxrc-scratch-view") || "grid"; } catch {}
 const tellScratch = () => scratchFrame.contentWindow?.postMessage({ view: scratchView, light: document.documentElement.classList.contains("light") }, "*"); // its origin is opaque
 scratchFrame.addEventListener("load", tellScratch);
-// Only the gallery is heard, never a page the viewer shows: it opens a pane, keeps its view, or
-// opens one of its pages, a path under /scratch/ here and nothing else (url-state.js).
+// Only the gallery is heard: it opens a pane, keeps its view, or opens one of its pages, a path
+// under /scratch/ here and nothing else (url-state.js). A page the viewer shows (a page still
+// being made links the pane making it) may open a pane, and nothing else: its origin is opaque,
+// so the placeholder can't be told from another page, and a pane opened is only navigation.
 addEventListener("message", (e) => {
-  if (e.source !== scratchFrame.contentWindow) return;
   const { pane, view, open, title } = e.data || {}, href = scratchUrl(open, location.href);
-  if (/^%\d+$/.test(pane)) navigate(pane);
+  if (/^%\d+$/.test(pane) && [scratchFrame, viewer.querySelector("iframe")].some((f) => f?.contentWindow === e.source)) navigate(pane);
+  if (e.source !== scratchFrame.contentWindow) return;
   if (["grid", "list"].includes(view)) { scratchView = view; try { localStorage.setItem("tmuxrc-scratch-view", view); } catch {} }
   if (href) viewScratch(href, title);
 });
@@ -812,10 +834,11 @@ function scratchPage() { return cardView("Scratch", scratchFrame); }
 // A fresh frame each time, so its loads add nothing to the app's history; gone once closed.
 const viewer = $("scratch-viewer");
 function viewScratch(href, title) {
-  text($("viewer-title"), String(title || ""));
+  title = String(title || "Scratch page"); // a "Ready" push's link names no title
+  text($("viewer-title"), title);
   $("viewer-out").href = href;
   viewer.querySelector("iframe")?.remove();
-  viewer.append(Object.assign(document.createElement("iframe"), { src: href, title: String(title || "Scratch page") }));
+  viewer.append(Object.assign(document.createElement("iframe"), { src: href, title }));
   viewer.showModal(); viewer.focus();
 }
 $("close-viewer").onclick = () => viewer.close();
@@ -862,10 +885,14 @@ function render() {
   if (!wide && $("chat").nextElementSibling !== callTo) inPane ? callTo.before($("live-mode"), $("chat")) : callTo.replaceWith($("chat"), callTo, $("live-mode"));
   const list = !inPane && !dashboard; // a phone's list screen: the only one with search and sort
   show("brand", wide || !list); show("find", wide || list);
+  // A phone's title heads the overview and scrolls off under the bar, as Gmail's subject does.
+  const head = $("pane-title").parentElement, headTo = wide ? $("heading") : $("overview");
+  if (head.parentElement !== headTo) wide ? $("back").after(head) : headTo.prepend(head);
   show("back", inPane && !wide); show("close-pane", wide); show("heading", inPane); show("detail", inPane);
   // The main column is never blank on a wide screen: with no pane chosen it answers the
   // question the sidebar cannot, which is what the whole fleet is doing right now.
   show("landing", dashboardVisible()); show("landing-main", !page); show("dash-page", !!page);
+  show("graph-card", panes.length > 0); show("graph-nav", panes.length > 0); // and its ☰ row with it, wherever the app is
   show("divider", wide); show("fleet", wide); show("fleet-handle", wide);
   renderList();
   if (!inPane) { if (dashboardVisible()) renderLanding(); return; }
@@ -901,6 +928,7 @@ function render() {
   const account = pane && accounts.badge(pane.pane_id);
   if (account) $("pane-location").insertAdjacentHTML(wide ? "beforeend" : "afterbegin", wide ? ` · ${account}` : `${account} `);
   for (const id of ["pane-title", "pane-location"]) $(id).title = $(id).textContent; // both ellipsize: hover shows the full text
+  $("heading").dataset.title = $("pane-title").textContent; // a phone's bar shows it once the title is out of sight
   $("detail").dataset.layout = effectiveLayout();
   // Each choice carries a line on what it shows and, wide, a wireframe of it (LAYOUT_THUMBS).
   const layouts = [["summary", "Overview", "The overview alone"], ["terminal", "Terminal", "The terminal alone"]];
@@ -993,12 +1021,47 @@ function render() {
   if (pane && overviewVisible()) loadEvents(pane);
 }
 
-// One tappable link row: the Links list's, and the one leading a question's card.
+// A card's link chip: a real <a>, so a long press offers the system's own link menu, and a
+// Copy link button beside it, so a link (a sign-in, say) can be opened in another browser
+// even where that menu is missing (a home-screen app).
+function linkPair(href) {
+  const pair = document.createElement("span"), anchor = document.createElement("a"), copy = document.createElement("button");
+  pair.className = "link-pair";
+  Object.assign(anchor, { href, target: "_blank", rel: "noopener noreferrer" });
+  Object.assign(copy, { type: "button", className: "icon-button link-copy", title: "Copy link", innerHTML: licon("copy", 16) });
+  copy.setAttribute("aria-label", "Copy link");
+  copy.onclick = (event) => { event.stopPropagation(); copyHere(copy, href, "copy"); };
+  pair.append(anchor, copy);
+  return pair;
+}
+
+// Copy `value` and say so in place, not in a banner: `el`'s icon turns to a check a moment.
+function copyHere(el, value, icon) {
+  const swap = (name) => { el.querySelector("svg").outerHTML = licon(name, 16); };
+  copyText(value, () => { swap("check"); text($("copied"), "Copied to clipboard."); setTimeout(() => { swap(icon); text($("copied"), ""); }, 1500); });
+}
+
+// One tappable link row: the Links list's, and the one leading a question's card. A tap opens
+// it; a long press copies it instead (to open in another browser), and the click after is not
+// a tap. The hold only arms the copy: it runs on release, where iOS grants the gesture that a
+// clipboard write needs. Scrolling, a second finger or a cancel disarms it.
 function renderLinks(el, links) {
   reconcile(el, links, (link) => link.href, () => {
     const anchor = document.createElement("a");
+    let timer, held = false;
     anchor.target = "_blank"; anchor.rel = "noopener noreferrer";
     anchor.innerHTML = '<span></span><small></small>' + licon("chevron", 16);
+    const disarm = () => { clearTimeout(timer); held = false; };
+    anchor.addEventListener("touchstart", (event) => {
+      disarm();
+      if (event.touches.length > 1) return;
+      timer = setTimeout(() => { held = true; }, 500);
+      document.addEventListener("touchstart", disarm, { capture: true, once: true, passive: true }); // the next finger anywhere (this one's capture has passed)
+    }, { passive: true });
+    for (const type of ["touchmove", "touchcancel"]) anchor.addEventListener(type, disarm, { passive: true });
+    anchor.addEventListener("touchend", () => { clearTimeout(timer); if (held) copyHere(anchor, anchor.href, "chevron"); }, { passive: true });
+    anchor.addEventListener("click", (event) => { if (held) event.preventDefault(); held = false; });
+    anchor.addEventListener("contextmenu", (event) => { if (held || event.pointerType === "touch") event.preventDefault(); }); // Android's link menu
     return anchor;
   }, (anchor, link) => {
     const host = new URL(link.href).host;
@@ -1050,9 +1113,17 @@ function renderTasks(pane) {
     return node;
   }, (node, value) => { node._value = value.text; text(node.querySelector("strong"), value.label); text(node.querySelector("pre"), value.text); });
 }
-async function copyText(value) {
-  try { await navigator.clipboard.writeText(value); notice("Copied to clipboard."); }
-  catch { notice("Could not copy. Select the text to copy it."); }
+async function copyText(value, copied = () => notice("Copied to clipboard.")) {
+  try { await navigator.clipboard.writeText(value); }
+  catch { // no Clipboard API (a plain-http origin) or no permission: the old select-and-copy
+    const area = Object.assign(document.createElement("textarea"), { value, readOnly: true });
+    area.style.cssText = "position: fixed; opacity: 0";
+    document.body.append(area); area.select();
+    const ok = document.execCommand("copy");
+    area.remove();
+    if (!ok) return notice("Could not copy. Select the text to copy it.");
+  }
+  copied();
 }
 
 // One line per task or sub-agent: the pane overview's lists, and the sidebar's agent rows.
@@ -1708,7 +1779,7 @@ $("secret").oninput = updateComposer;
 enterSubmits($("reply-form"), (target) => $("reply").contains(target));
 bindAttach($("attach"), $("image-file"), () => active && !sending ? draft() : null);
 
-for (const [id, name] of Object.entries({ "menu-open": "menu", collapse: "panel", "dash-nav": "gauge", "scratch-nav": "images", "close-viewer": "back", "settings-open": "settings", "close-settings": "x", back: "back", "close-pane": "x", "pane-menu-button": "ellipsis", "new-window": "plus", "search-icon": "search", "clear-search": "x", send: "up", attach: "paperclip", keyboard: "keyboard", "close-launch": "x", "close-expunge": "x", "close-export": "x", "close-move": "x", "zoom-in": "plus", "zoom-out": "minus", tail: "down" })) icon(id, name);
+for (const [id, name] of Object.entries({ "menu-open": "menu", collapse: "panel", "dash-nav": "gauge", "graph-nav": "network", "scratch-nav": "images", "close-viewer": "back", "settings-open": "settings", "close-settings": "x", back: "back", "close-pane": "x", "pane-menu-button": "ellipsis", "new-window": "plus", "search-icon": "search", "clear-search": "x", send: "up", attach: "paperclip", keyboard: "keyboard", "close-launch": "x", "close-expunge": "x", "close-export": "x", "close-move": "x", "zoom-in": "plus", "zoom-out": "minus", tail: "down", "view-summary": "fileText", "view-terminal": "terminal" })) icon(id, name);
 // The phone's tab bar: Sessions, home, in the middle (Chat and Voice are live.js's). The gauge is Dashboard's
 // everywhere; the 2×2 grid is the layout picker's. Only Needs you carries a count.
 for (const [id, label, glyph] of [["dashboard", "Dashboard", "gauge"], ["all", "Sessions", "layers"], ["attention", "Needs you", "alert"]]) {
@@ -1766,7 +1837,7 @@ $("dashboard-tab").onclick = $("dash-nav").onclick = () => openDashboard();
 // Settings, the docs link), shown when it is and current while it is pressed. A modal
 // dialog, so focus stays in it and returns to ☰; a tap off it, Escape or a drag left closes it.
 // It slides every way it comes and goes (settle, below), a row's place opening once it is gone.
-html($("drawer-nav"), [["dashboard-tab", "Dashboard", "gauge"], ["all-tab", "Sessions", "layers"], ["attention-tab", "Needs you", "alert"], ["scratch-nav", "Scratch", "images"], ["settings-open", "Settings", "settings"], ["docs", "Documentation", "book"]]
+html($("drawer-nav"), [["dashboard-tab", "Dashboard", "gauge"], ["graph-nav", "Graph", "network"], ["all-tab", "Sessions", "layers"], ["attention-tab", "Needs you", "alert"], ["scratch-nav", "Scratch", "images"], ["settings-open", "Settings", "settings"], ["docs", "Documentation", "book"]]
   .map(([via, label, glyph]) => `<button type="button" data-via="${via}">${licon(glyph)}<span>${label}</span><span class="count"></span></button>`).join(""));
 $("menu-open").onclick = (e) => {
   // One current row, the most specific pressed (rows run general to specific): Scratch, not
@@ -1806,7 +1877,7 @@ function openRecent() {
   paintRecent();
   request("/api/recent").then((recent) => {
     opened = recent.panes; paintRecent();
-    html($("drawer-scratch"), recentList("Recent scratch", recent.scratch.map((s) => `<a href="/scratch/${esc(s.href)}" target="_blank">${licon("images")}<span>${esc(s.title)}</span><time>${since({ state_since: s.at })}</time></a>`)));
+    html($("drawer-scratch"), recentList("Recent scratch", recent.scratch.map((s) => `<a href="/scratch/${esc(s.href)}" target="_blank">${s.pending ? '<span class="pane-icon pending"></span>' : licon("images")}<span>${esc(s.title)}</span><time>${since({ state_since: s.at })}</time></a>`)));
   }, () => {});
 }
 // It tracks the finger, as Gmail's does: dragged sideways while open, or in from the list's left
@@ -1834,7 +1905,7 @@ addEventListener("touchmove", (e) => {
   drag.v = (t.clientX - drag.at) / Math.max(1, e.timeStamp - drag.t); drag.at = t.clientX; drag.t = e.timeStamp;
   slide(Math.min(0, Math.max(-drawer.offsetWidth, drag.base + dx)));
 }, { passive: true });
-$("scratch-nav").onclick = (e) => { e.preventDefault(); openPage("scratch"); };
+for (const nav of ["scratch", "graph"]) $(`${nav}-nav`).onclick = (e) => { e.preventDefault(); openPage(nav); };
 $("empty-needs").onclick = () => { const needs = $("empty-needs").dataset.all === "needs"; if (needs) $("search").value = ""; filter = needs ? ["attention"] : []; scope.tools = []; stayPut({ acct: [] }); };
 // Close only leaves the pane, exactly like Back (which stands in for it on a narrow screen).
 $("back").onclick = $("close-pane").onclick = () => navigate();
